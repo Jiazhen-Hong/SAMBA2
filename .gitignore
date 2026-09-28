@@ -5,5 +5,77 @@ Other_Models/
 Script/
 Experiments/
 
+# Local references and papers
+reference/
+references/
+Reference/
+References/
+**/reference/
+**/references/
+**/Reference/
+**/References/
+*.pdf
+*.PDF
 
+# Private local working notes (never commit)
+LocalNote*.md
+localnote*.md
+.local/
 
+# Local datasets and generated data
+data/
+Data/
+dataset/
+datasets/
+Dataset/
+Datasets/
+raw_data/
+raw-data/
+processed_data/
+processed-data/
+
+# EEG and biosignal recording formats
+*.edf
+*.bdf
+*.gdf
+*.cnt
+*.set
+*.fdt
+*.eeg
+*.vhdr
+*.vmrk
+*.mff
+*.xdf
+*.nwb
+*.fif
+*.cdt
+*.snirf
+
+# Large numerical data containers commonly used for EEG
+*.mat
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.pkl
+*.pickle
+*.parquet
+
+# Python-generated files and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Local configuration, credentials, logs, and editor files
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+.idea/
+.vscode/
