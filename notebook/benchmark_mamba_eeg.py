@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Benchmark Mamba-1, Mamba-2, and Mamba-3 on simulated EEG.
+"""Benchmark five sequence models on simulated EEG.
 
 This script is intended to run on an NVIDIA GPU. It compares otherwise
 identical EEG reconstruction networks whose sequence block is Mamba-1,
-Mamba-2, or Mamba-3. It can optionally perform a short masked-reconstruction
-pretraining stage before measuring inference memory and speed.
+Mamba-2, Mamba-3, exact Transformer, or causal Linear Transformer. It can
+optionally perform short masked-reconstruction pretraining before measurement.
 
 Example on Axon (physical GPU 1):
     python notebook/benchmark_mamba_eeg.py --gpu 1
 
-Outputs are written to Results/mamba123_benchmark by default. The directory
-contains two requested plots, a combined plot, raw CSV results, run metadata,
-and optional locally trained checkpoints.
+Outputs are written to Results/eeg_sequence_benchmark by default. The directory
+contains inference-memory, training-memory, and inference-speed plots, a
+combined inference plot, raw CSV results, metadata, and local checkpoints.
 """
 
 from __future__ import annotations
@@ -165,14 +165,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--transformer-max-length",
         type=int,
-        default=16384,
+        default=8192,
         help="Inference safety limit for exact Transformer; 0 disables it.",
     )
     parser.add_argument(
         "--transformer-training-max-length",
         type=int,
-        default=8192,
+        default=4096,
         help="Training-memory safety limit for exact Transformer; 0 disables it.",
+    )
+    parser.add_argument(
+        "--linear-transformer-max-length",
+        type=int,
+        default=65536,
+        help="Inference safety limit for Linear Transformer; 0 disables it.",
+    )
+    parser.add_argument(
+        "--linear-transformer-training-max-length",
+        type=int,
+        default=32768,
+        help="Training-memory safety limit for Linear Transformer; 0 disables it.",
     )
     parser.add_argument(
         "--pretrain-steps",
@@ -188,12 +200,12 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help=(
-            "Optional directory containing mamba1.pt, mamba2.pt, and/or "
-            "mamba3.pt. Missing files fall back to short synthetic pretraining."
+            "Optional directory containing <model-name>.pt files. Missing files "
+            "fall back to short synthetic pretraining."
         ),
     )
     parser.add_argument(
-        "--output-dir", type=Path, default=Path("Results/mamba123_benchmark")
+        "--output-dir", type=Path, default=Path("Results/eeg_sequence_benchmark")
     )
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument(
@@ -222,8 +234,14 @@ def parse_args() -> argparse.Namespace:
             parser.error(f"--{field.replace('_', '-')} must be positive")
     if args.warmup < 0 or args.pretrain_steps < 0:
         parser.error("--warmup and --pretrain-steps cannot be negative")
-    if args.transformer_max_length < 0 or args.transformer_training_max_length < 0:
-        parser.error("Transformer length limits cannot be negative")
+    length_limits = (
+        args.transformer_max_length,
+        args.transformer_training_max_length,
+        args.linear_transformer_max_length,
+        args.linear_transformer_training_max_length,
+    )
+    if any(limit < 0 for limit in length_limits):
+        parser.error("Model length limits cannot be negative")
     if not 0.0 < args.mask_ratio < 1.0:
         parser.error("--mask-ratio must be between 0 and 1")
     if args.d_model * args.expand % args.headdim != 0:
@@ -732,19 +750,26 @@ def benchmark_training_memory(
     return peak_gib
 
 
-def exceeds_transformer_limit(
+def exceeds_model_limit(
     kind: str,
     length: int,
     args: argparse.Namespace,
     training: bool,
 ) -> bool:
-    if kind != "transformer":
+    if kind == "transformer":
+        limit = (
+            args.transformer_training_max_length
+            if training
+            else args.transformer_max_length
+        )
+    elif kind == "linear_transformer":
+        limit = (
+            args.linear_transformer_training_max_length
+            if training
+            else args.linear_transformer_max_length
+        )
+    else:
         return False
-    limit = (
-        args.transformer_training_max_length
-        if training
-        else args.transformer_max_length
-    )
     return limit > 0 and length > limit
 
 
@@ -875,7 +900,7 @@ def plot_all(results: list[Result], models: list[str], output_dir: Path) -> None
         "peak_memory_gib",
         "Peak allocated GPU memory (GiB)",
         "EEG sequence-model inference memory",
-        output_dir / "mamba123_memory.png",
+        output_dir / "eeg_models_inference_memory.png",
     )
     plot_metric(
         results,
@@ -883,7 +908,7 @@ def plot_all(results: list[Result], models: list[str], output_dir: Path) -> None
         "throughput_samples_per_ms",
         "Throughput (batch × samples / ms)",
         "EEG sequence-model inference speed",
-        output_dir / "mamba123_speed.png",
+        output_dir / "eeg_models_inference_speed.png",
     )
     plot_metric(
         results,
@@ -891,19 +916,19 @@ def plot_all(results: list[Result], models: list[str], output_dir: Path) -> None
         "peak_training_memory_gib",
         "Peak allocated GPU memory (GiB)",
         "EEG masked-pretraining memory (forward + backward + AdamW)",
-        output_dir / "mamba123_training_memory.png",
+        output_dir / "eeg_models_training_memory.png",
         status_field="training_status",
     )
 
-    memory_image = plt.imread(output_dir / "mamba123_memory.png")
-    speed_image = plt.imread(output_dir / "mamba123_speed.png")
+    memory_image = plt.imread(output_dir / "eeg_models_inference_memory.png")
+    speed_image = plt.imread(output_dir / "eeg_models_inference_speed.png")
     figure, axes = plt.subplots(1, 2, figsize=(18, 6.3), constrained_layout=True)
     axes[0].imshow(memory_image)
     axes[1].imshow(speed_image)
     for axis, label in zip(axes, ("(a) Memory usage", "(b) Inference speed")):
         axis.axis("off")
         axis.set_title(label, y=-0.06, fontsize=13)
-    figure.savefig(output_dir / "mamba123_combined.png", dpi=180)
+    figure.savefig(output_dir / "eeg_models_combined.png", dpi=180)
     plt.close(figure)
 
 
@@ -963,12 +988,15 @@ def main() -> int:
 
     results: list[Result] = []
     pretraining: dict[str, Any] = {}
-    for model_index, kind in enumerate(args.models):
+    for kind in args.models:
         print(f"\n=== {MODEL_LABELS[kind]} ===", flush=True)
         release_cuda()
         try:
             model = EEGMambaModel(kind, args, dtype).to(device)
             parameter_count = sum(parameter.numel() for parameter in model.parameters())
+            MODEL_LABELS[kind] = (
+                f"{MODEL_LABELS[kind]} ({parameter_count / 1_000_000:.2f}M params)"
+            )
             print(f"parameters: {parameter_count:,}", flush=True)
             try:
                 pretraining[kind] = pretrain_model(
@@ -986,17 +1014,86 @@ def main() -> int:
                 model.zero_grad(set_to_none=True)
                 release_cuda()
 
-            saw_oom = False
+            training_optimizer = None
+            if not args.skip_training_memory:
+                training_optimizer = torch.optim.AdamW(
+                    model.parameters(), lr=args.learning_rate
+                )
+            saw_inference_oom = False
+            saw_training_oom = False
             for length in args.lengths:
-                if saw_oom and not args.continue_after_oom:
+                training_status = "not_run"
+                training_peak = None
+                training_error = ""
+                if args.skip_training_memory:
+                    training_status = "not_run"
+                elif exceeds_model_limit(kind, length, args, training=True):
+                    training_status = "skipped_limit"
+                    training_error = "Skipped by model training safety limit."
+                elif saw_training_oom and not args.continue_after_oom:
+                    training_status = "skipped_oom"
+                    training_error = (
+                        "Skipped because a shorter training sequence already caused OOM."
+                    )
+                else:
+                    release_cuda()
+                    try:
+                        training_peak = benchmark_training_memory(
+                            model,
+                            training_optimizer,
+                            length,
+                            args,
+                            device,
+                            dtype,
+                        )
+                        training_status = "ok"
+                        print(
+                            f"  L={length:>7} train: {training_peak:.3f} GiB",
+                            flush=True,
+                        )
+                    except BaseException as exc:
+                        training_status = "oom" if is_cuda_oom(exc) else "error"
+                        training_error = compact_error(exc)
+                        print(
+                            f"  L={length:>7} train: {training_status.upper()} - "
+                            f"{training_error}",
+                            flush=True,
+                        )
+                        if training_status == "oom":
+                            saw_training_oom = True
+                        else:
+                            traceback.print_exc()
+                        model.zero_grad(set_to_none=True)
+
+                if exceeds_model_limit(kind, length, args, training=False):
+                    result = Result(
+                        model=kind,
+                        sequence_length=length,
+                        status="skipped_limit",
+                        training_status=training_status,
+                        peak_training_memory_gib=training_peak,
+                        parameter_count=parameter_count,
+                        error="Skipped by model inference safety limit.",
+                        training_error=training_error,
+                    )
+                    results.append(result)
+                    write_results(results, args.output_dir)
+                    plot_all(results, args.models, args.output_dir)
+                    continue
+                if saw_inference_oom and not args.continue_after_oom:
                     result = Result(
                         model=kind,
                         sequence_length=length,
                         status="skipped_oom",
+                        training_status=training_status,
+                        peak_training_memory_gib=training_peak,
                         parameter_count=parameter_count,
-                        error="Skipped because a shorter sequence already caused OOM.",
+                        error="Skipped because a shorter inference sequence caused OOM.",
+                        training_error=training_error,
                     )
                     results.append(result)
+                    write_results(results, args.output_dir)
+                    plot_all(results, args.models, args.output_dir)
                     continue
                 release_cuda()
                 try:
@@ -1009,8 +1106,11 @@ def main() -> int:
                         dtype,
                         parameter_count,
                     )
+                    result.training_status = training_status
+                    result.peak_training_memory_gib = training_peak
+                    result.training_error = training_error
                     print(
-                        f"  L={length:>7}: {result.peak_memory_gib:.3f} GiB, "
+                        f"  L={length:>7} infer: {result.peak_memory_gib:.3f} GiB, "
                         f"{result.latency_ms:.3f} ms, "
                         f"{result.throughput_samples_per_ms:.2f} samples/ms",
                         flush=True,
@@ -1021,17 +1121,25 @@ def main() -> int:
                         model=kind,
                         sequence_length=length,
                         status=status,
+                        training_status=training_status,
+                        peak_training_memory_gib=training_peak,
                         parameter_count=parameter_count,
                         error=compact_error(exc),
+                        training_error=training_error,
                     )
-                    print(f"  L={length:>7}: {status.upper()} - {result.error}", flush=True)
+                    print(
+                        f"  L={length:>7} infer: {status.upper()} - {result.error}",
+                        flush=True,
+                    )
                     if status == "oom":
-                        saw_oom = True
+                        saw_inference_oom = True
                     else:
                         traceback.print_exc()
                 results.append(result)
                 write_results(results, args.output_dir)
                 plot_all(results, args.models, args.output_dir)
+            if training_optimizer is not None:
+                del training_optimizer
         except BaseException as exc:
             # A construction or pretraining error is recorded for every requested
             # length so the plots/CSV show that the model did not silently vanish.
@@ -1044,10 +1152,14 @@ def main() -> int:
                         model=kind,
                         sequence_length=length,
                         status=status,
+                        training_status=status,
                         error=compact_error(exc),
+                        training_error=compact_error(exc),
                     )
                 )
         finally:
+            if "training_optimizer" in locals():
+                del training_optimizer
             if "model" in locals():
                 del model
             release_cuda()
