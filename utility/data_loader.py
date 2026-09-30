@@ -25,7 +25,7 @@ def data_loader(config):
 
     # TUAB-style data loading
     if style == "tuab":
-        tuab_root = f"{config.Dataset_path}/128hz_{config.TU_sequen}seqlen/"
+        tuab_root = f"{config.TUAB_path}/128hz_{config.TU_sequen}seqlen/"
         train_loader, val_loader, test_loader = DataUtils.TUABLoader(
             tuab_root=tuab_root,
             batch_size=config.batch_size,
@@ -96,7 +96,7 @@ def load_input_df_and_data(config):
         input_df = pd.read_excel(config.TUAB_coord_path, index_col=0)
         path = None  # TUAB handled differently later
     else:
-        raise ValueError(f"Unsupported Dataset_path: {config.Dataset_path}")
+        raise ValueError(f"Unsupported Dataset_style: {config.Dataset_style}")
     if path:
         data_x_dir = np.load(path, allow_pickle=True)
 
@@ -244,6 +244,5 @@ def fused_emotiv_loader(config):
     sample_batch = next(iter(train_loader))[0]
     return DataObject(train_loader, val_loader, test_loader, input_df, target_df,
                       sample_batch.shape[1], sample_batch.shape[2])
-
 
 

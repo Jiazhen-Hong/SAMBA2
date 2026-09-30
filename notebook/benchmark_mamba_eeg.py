@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import csv
 import gc
+import importlib.metadata
 import json
 import os
 import platform
@@ -55,13 +56,23 @@ MODEL_LABELS = {
     "mamba1": "Mamba-1",
     "mamba2": "Mamba-2",
     "mamba3": "Mamba-3",
+    "transformer": "Transformer",
+    "linear_transformer": "Linear Transformer",
 }
 MODEL_COLORS = {
     "mamba1": "#4472C4",
     "mamba2": "#ED7D31",
     "mamba3": "#70AD47",
+    "transformer": "#A64D79",
+    "linear_transformer": "#00A6A6",
 }
-MODEL_MARKERS = {"mamba1": "o", "mamba2": "s", "mamba3": "^"}
+MODEL_MARKERS = {
+    "mamba1": "o",
+    "mamba2": "s",
+    "mamba3": "^",
+    "transformer": "D",
+    "linear_transformer": "P",
+}
 
 
 @dataclass
@@ -72,8 +83,11 @@ class Result:
     peak_memory_gib: float | None = None
     latency_ms: float | None = None
     throughput_samples_per_ms: float | None = None
+    training_status: str = "not_run"
+    peak_training_memory_gib: float | None = None
     parameter_count: int | None = None
     error: str = ""
+    training_error: str = ""
 
 
 def parse_lengths(text: str) -> list[int]:
@@ -118,10 +132,48 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--d-conv", type=int, default=4)
     parser.add_argument("--headdim", type=int, default=64)
     parser.add_argument(
+        "--attention-heads",
+        type=int,
+        default=8,
+        help="Number of heads for Transformer and Linear Transformer.",
+    )
+    parser.add_argument(
+        "--linear-attention-chunk-size",
+        type=int,
+        default=256,
+        help="Chunk size for causal Linear Transformer prefix accumulation.",
+    )
+    parser.add_argument(
+        "--mamba2-path",
+        choices=("auto", "fused", "fallback"),
+        default="auto",
+        help=(
+            "Mamba-2 execution path. 'auto' uses the fused path only when the "
+            "causal-conv1d CUDA function is importable."
+        ),
+    )
+    parser.add_argument(
         "--dtype", choices=("bfloat16", "float16", "float32"), default="bfloat16"
     )
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--repeats", type=int, default=5)
+    parser.add_argument(
+        "--skip-training-memory",
+        action="store_true",
+        help="Skip the additional forward/backward/AdamW peak-memory curve.",
+    )
+    parser.add_argument(
+        "--transformer-max-length",
+        type=int,
+        default=16384,
+        help="Inference safety limit for exact Transformer; 0 disables it.",
+    )
+    parser.add_argument(
+        "--transformer-training-max-length",
+        type=int,
+        default=8192,
+        help="Training-memory safety limit for exact Transformer; 0 disables it.",
+    )
     parser.add_argument(
         "--pretrain-steps",
         type=int,
@@ -160,6 +212,8 @@ def parse_args() -> argparse.Namespace:
         "expand",
         "d_conv",
         "headdim",
+        "attention_heads",
+        "linear_attention_chunk_size",
         "repeats",
         "pretrain_length",
     )
@@ -168,10 +222,14 @@ def parse_args() -> argparse.Namespace:
             parser.error(f"--{field.replace('_', '-')} must be positive")
     if args.warmup < 0 or args.pretrain_steps < 0:
         parser.error("--warmup and --pretrain-steps cannot be negative")
+    if args.transformer_max_length < 0 or args.transformer_training_max_length < 0:
+        parser.error("Transformer length limits cannot be negative")
     if not 0.0 < args.mask_ratio < 1.0:
         parser.error("--mask-ratio must be between 0 and 1")
     if args.d_model * args.expand % args.headdim != 0:
         parser.error("d-model * expand must be divisible by headdim")
+    if args.d_model % args.attention_heads != 0:
+        parser.error("d-model must be divisible by attention-heads")
     return args
 
 
@@ -181,6 +239,42 @@ def torch_dtype(name: str) -> torch.dtype:
         "float16": torch.float16,
         "float32": torch.float32,
     }[name]
+
+
+def causal_conv1d_status() -> tuple[bool, str]:
+    """Return whether Mamba-2's fused causal-conv1d functions are usable."""
+    try:
+        from causal_conv1d import causal_conv1d_fn
+        from mamba_ssm.ops.triton import ssd_combined
+
+        functions = {
+            "causal_conv1d_fn": causal_conv1d_fn,
+            "causal_conv1d_fwd_function": ssd_combined.causal_conv1d_fwd_function,
+            "causal_conv1d_bwd_function": ssd_combined.causal_conv1d_bwd_function,
+        }
+        missing = [name for name, function in functions.items() if not callable(function)]
+        if missing:
+            return False, "non-callable fused function(s): " + ", ".join(missing)
+        try:
+            version = importlib.metadata.version("causal-conv1d")
+        except importlib.metadata.PackageNotFoundError:
+            version = "unknown"
+        return True, f"causal-conv1d {version}"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {' '.join(str(exc).split())}"
+
+
+def use_mamba2_fused_path(args: argparse.Namespace) -> bool:
+    available, detail = causal_conv1d_status()
+    if args.mamba2_path == "fused" and not available:
+        raise RuntimeError(
+            "--mamba2-path fused was requested, but the causal-conv1d CUDA "
+            f"function is unavailable ({detail}). Use --mamba2-path fallback "
+            "or reinstall a causal-conv1d build compatible with this PyTorch/CUDA."
+        )
+    if args.mamba2_path == "fallback":
+        return False
+    return available
 
 
 def build_mamba(kind: str, args: argparse.Namespace, dtype: torch.dtype) -> nn.Module:
@@ -200,6 +294,7 @@ def build_mamba(kind: str, args: argparse.Namespace, dtype: torch.dtype) -> nn.M
             d_state=64,
             d_conv=args.d_conv,
             headdim=args.headdim,
+            use_mem_eff_path=use_mamba2_fused_path(args),
             **common,
         )
     if kind == "mamba3":
@@ -216,6 +311,155 @@ def build_mamba(kind: str, args: argparse.Namespace, dtype: torch.dtype) -> nn.M
     raise ValueError(f"Unknown model kind: {kind}")
 
 
+class MambaResidualBlock(nn.Module):
+    def __init__(self, kind: str, args: argparse.Namespace, dtype: torch.dtype):
+        super().__init__()
+        self.norm = nn.LayerNorm(args.d_model, dtype=dtype)
+        self.mixer = build_mamba(kind, args, dtype)
+
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        return hidden + self.mixer(self.norm(hidden))
+
+
+class FeedForward(nn.Module):
+    def __init__(self, d_model: int, dtype: torch.dtype):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(d_model, 2 * d_model, dtype=dtype),
+            nn.GELU(),
+            nn.Linear(2 * d_model, d_model, dtype=dtype),
+        )
+
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        return self.net(hidden)
+
+
+class CausalSelfAttention(nn.Module):
+    """Exact causal softmax attention using PyTorch SDPA kernels."""
+
+    def __init__(self, args: argparse.Namespace, dtype: torch.dtype):
+        super().__init__()
+        self.num_heads = args.attention_heads
+        self.head_dim = args.d_model // self.num_heads
+        self.qkv = nn.Linear(args.d_model, 3 * args.d_model, dtype=dtype)
+        self.out_projection = nn.Linear(args.d_model, args.d_model, dtype=dtype)
+
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        batch, length, d_model = hidden.shape
+        qkv = self.qkv(hidden).view(
+            batch, length, 3, self.num_heads, self.head_dim
+        )
+        query, key, value = qkv.unbind(dim=2)
+        query = query.transpose(1, 2)
+        key = key.transpose(1, 2)
+        value = value.transpose(1, 2)
+        attended = torch.nn.functional.scaled_dot_product_attention(
+            query,
+            key,
+            value,
+            dropout_p=0.0,
+            is_causal=True,
+        )
+        attended = attended.transpose(1, 2).reshape(batch, length, d_model)
+        return self.out_projection(attended)
+
+
+class CausalLinearAttention(nn.Module):
+    """Causal ELU+1 linear attention with bounded-size prefix chunks."""
+
+    def __init__(self, args: argparse.Namespace, dtype: torch.dtype):
+        super().__init__()
+        self.num_heads = args.attention_heads
+        self.head_dim = args.d_model // self.num_heads
+        self.chunk_size = args.linear_attention_chunk_size
+        self.qkv = nn.Linear(args.d_model, 3 * args.d_model, dtype=dtype)
+        self.out_projection = nn.Linear(args.d_model, args.d_model, dtype=dtype)
+
+    @staticmethod
+    def feature_map(tensor: torch.Tensor) -> torch.Tensor:
+        return torch.nn.functional.elu(tensor).add_(1.0)
+
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        batch, length, d_model = hidden.shape
+        qkv = self.qkv(hidden).view(
+            batch, length, 3, self.num_heads, self.head_dim
+        )
+        query, key, value = qkv.unbind(dim=2)
+        query = self.feature_map(query.transpose(1, 2))
+        key = self.feature_map(key.transpose(1, 2))
+        value = value.transpose(1, 2)
+
+        key_state = torch.zeros(
+            batch,
+            self.num_heads,
+            self.head_dim,
+            device=hidden.device,
+            dtype=hidden.dtype,
+        )
+        key_value_state = torch.zeros(
+            batch,
+            self.num_heads,
+            self.head_dim,
+            self.head_dim,
+            device=hidden.device,
+            dtype=hidden.dtype,
+        )
+        outputs = []
+        for start in range(0, length, self.chunk_size):
+            stop = min(start + self.chunk_size, length)
+            query_chunk = query[:, :, start:stop]
+            key_chunk = key[:, :, start:stop]
+            value_chunk = value[:, :, start:stop]
+            key_prefix = key_chunk.cumsum(dim=2) + key_state.unsqueeze(2)
+            key_value = torch.einsum(
+                "bhld,bhle->bhlde", key_chunk, value_chunk
+            )
+            key_value_prefix = key_value.cumsum(dim=2) + key_value_state.unsqueeze(2)
+            numerator = torch.einsum(
+                "bhld,bhlde->bhle", query_chunk, key_value_prefix
+            )
+            denominator = torch.einsum(
+                "bhld,bhld->bhl", query_chunk, key_prefix
+            ).unsqueeze(-1)
+            outputs.append(numerator / denominator.clamp_min(1e-6))
+            key_state = key_prefix[:, :, -1]
+            key_value_state = key_value_prefix[:, :, -1]
+
+        attended = torch.cat(outputs, dim=2)
+        attended = attended.transpose(1, 2).reshape(batch, length, d_model)
+        return self.out_projection(attended)
+
+
+class AttentionResidualBlock(nn.Module):
+    def __init__(
+        self,
+        attention: nn.Module,
+        args: argparse.Namespace,
+        dtype: torch.dtype,
+    ):
+        super().__init__()
+        self.attention_norm = nn.LayerNorm(args.d_model, dtype=dtype)
+        self.attention = attention
+        self.ffn_norm = nn.LayerNorm(args.d_model, dtype=dtype)
+        self.ffn = FeedForward(args.d_model, dtype)
+
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        hidden = hidden + self.attention(self.attention_norm(hidden))
+        return hidden + self.ffn(self.ffn_norm(hidden))
+
+
+def build_sequence_block(
+    kind: str, args: argparse.Namespace, dtype: torch.dtype
+) -> nn.Module:
+    if kind in ("mamba1", "mamba2", "mamba3"):
+        return MambaResidualBlock(kind, args, dtype)
+    if kind == "transformer":
+        return AttentionResidualBlock(CausalSelfAttention(args, dtype), args, dtype)
+    if kind == "linear_transformer":
+        return AttentionResidualBlock(CausalLinearAttention(args, dtype), args, dtype)
+    raise ValueError(f"Unknown model kind: {kind}")
+
+
 class EEGMambaModel(nn.Module):
     """Small channel-to-channel EEG reconstruction model."""
 
@@ -224,11 +468,8 @@ class EEGMambaModel(nn.Module):
         self.input_projection = nn.Linear(
             args.channels, args.d_model, dtype=dtype
         )
-        self.norms = nn.ModuleList(
-            nn.LayerNorm(args.d_model, dtype=dtype) for _ in range(args.layers)
-        )
         self.blocks = nn.ModuleList(
-            build_mamba(kind, args, dtype) for _ in range(args.layers)
+            build_sequence_block(kind, args, dtype) for _ in range(args.layers)
         )
         self.output_norm = nn.LayerNorm(args.d_model, dtype=dtype)
         self.output_projection = nn.Linear(
@@ -238,8 +479,8 @@ class EEGMambaModel(nn.Module):
     def forward(self, eeg: torch.Tensor) -> torch.Tensor:
         # Input and output: [batch, channels, time]. Mamba: [batch, time, d_model].
         hidden = self.input_projection(eeg.transpose(1, 2))
-        for norm, block in zip(self.norms, self.blocks):
-            hidden = hidden + block(norm(hidden))
+        for block in self.blocks:
+            hidden = block(hidden)
         reconstructed = self.output_projection(self.output_norm(hidden))
         return reconstructed.transpose(1, 2)
 
@@ -449,6 +690,64 @@ def benchmark_one_length(
     )
 
 
+def benchmark_training_memory(
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    length: int,
+    args: argparse.Namespace,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> float:
+    """Measure a complete masked-reconstruction training step."""
+    target = simulate_eeg(
+        args.batch_size,
+        args.channels,
+        length,
+        args.sample_rate,
+        device,
+        dtype,
+        args.seed + 500_000 + length,
+    )
+    mask = contiguous_mask(
+        args.batch_size,
+        args.channels,
+        length,
+        args.mask_ratio,
+        device,
+    )
+    corrupted = target.masked_fill(mask, 0.0)
+    model.train()
+    optimizer.zero_grad(set_to_none=True)
+    torch.cuda.reset_peak_memory_stats(device)
+
+    prediction = model(corrupted)
+    squared_error = (prediction.float() - target.float()).square()
+    loss = squared_error.masked_select(mask).mean()
+    loss.backward()
+    optimizer.step()
+    torch.cuda.synchronize()
+    peak_gib = torch.cuda.max_memory_allocated(device) / (1024**3)
+    optimizer.zero_grad(set_to_none=True)
+    del target, mask, corrupted, prediction, squared_error, loss
+    return peak_gib
+
+
+def exceeds_transformer_limit(
+    kind: str,
+    length: int,
+    args: argparse.Namespace,
+    training: bool,
+) -> bool:
+    if kind != "transformer":
+        return False
+    limit = (
+        args.transformer_training_max_length
+        if training
+        else args.transformer_max_length
+    )
+    return limit > 0 and length > limit
+
+
 def compact_error(exc: BaseException, limit: int = 400) -> str:
     message = " ".join(str(exc).split())
     return message[:limit]
@@ -480,21 +779,23 @@ def plot_metric(
     title: str,
     path: Path,
     log_x: bool = True,
+    status_field: str = "status",
 ) -> None:
     figure, axis = plt.subplots(figsize=(9.2, 6.2), constrained_layout=True)
     successful_values = [
         getattr(row, metric)
         for row in results
-        if row.status == "ok" and getattr(row, metric) is not None
+        if getattr(row, status_field) == "ok" and getattr(row, metric) is not None
     ]
     y_min = min(successful_values) if successful_values else 1.0
     y_max = max(successful_values) if successful_values else 1.0
-    oom_y = y_max * 1.12 if metric == "peak_memory_gib" else max(y_min * 0.7, 1e-6)
-    error_y = y_max * 1.22 if metric == "peak_memory_gib" else max(y_min * 0.5, 1e-6)
+    is_memory_metric = "memory" in metric
+    oom_y = y_max * 1.12 if is_memory_metric else max(y_min * 0.7, 1e-6)
+    error_y = y_max * 1.22 if is_memory_metric else max(y_min * 0.5, 1e-6)
 
     for kind in models:
         rows = [row for row in results if row.model == kind]
-        ok_rows = [row for row in rows if row.status == "ok"]
+        ok_rows = [row for row in rows if getattr(row, status_field) == "ok"]
         if ok_rows:
             axis.plot(
                 [row.sequence_length for row in ok_rows],
@@ -505,7 +806,11 @@ def plot_metric(
                 linewidth=2,
                 markersize=6,
             )
-        oom_rows = [row for row in rows if row.status in ("oom", "skipped_oom")]
+        oom_rows = [
+            row
+            for row in rows
+            if getattr(row, status_field) in ("oom", "skipped_oom")
+        ]
         if oom_rows:
             axis.scatter(
                 [row.sequence_length for row in oom_rows],
@@ -525,7 +830,9 @@ def plot_metric(
                 color=MODEL_COLORS[kind],
                 fontsize=8,
             )
-        error_rows = [row for row in rows if row.status == "error"]
+        error_rows = [
+            row for row in rows if getattr(row, status_field) == "error"
+        ]
         if error_rows:
             axis.scatter(
                 [row.sequence_length for row in error_rows],
@@ -534,6 +841,20 @@ def plot_metric(
                 marker="x",
                 s=65,
                 zorder=4,
+            )
+        limited_rows = [
+            row for row in rows if getattr(row, status_field) == "skipped_limit"
+        ]
+        if limited_rows:
+            first = min(limited_rows, key=lambda row: row.sequence_length)
+            axis.annotate(
+                "safety limit",
+                (first.sequence_length, error_y),
+                rotation=90,
+                va="center",
+                ha="center",
+                color=MODEL_COLORS[kind],
+                fontsize=8,
             )
 
     if log_x:
@@ -553,7 +874,7 @@ def plot_all(results: list[Result], models: list[str], output_dir: Path) -> None
         models,
         "peak_memory_gib",
         "Peak allocated GPU memory (GiB)",
-        "Mamba EEG inference memory",
+        "EEG sequence-model inference memory",
         output_dir / "mamba123_memory.png",
     )
     plot_metric(
@@ -561,8 +882,17 @@ def plot_all(results: list[Result], models: list[str], output_dir: Path) -> None
         models,
         "throughput_samples_per_ms",
         "Throughput (batch × samples / ms)",
-        "Mamba EEG inference speed",
+        "EEG sequence-model inference speed",
         output_dir / "mamba123_speed.png",
+    )
+    plot_metric(
+        results,
+        models,
+        "peak_training_memory_gib",
+        "Peak allocated GPU memory (GiB)",
+        "EEG masked-pretraining memory (forward + backward + AdamW)",
+        output_dir / "mamba123_training_memory.png",
+        status_field="training_status",
     )
 
     memory_image = plt.imread(output_dir / "mamba123_memory.png")
@@ -581,6 +911,13 @@ def environment_metadata(args: argparse.Namespace) -> dict[str, Any]:
     import mamba_ssm
 
     free_bytes, total_bytes = torch.cuda.mem_get_info()
+    causal_available, causal_detail = causal_conv1d_status()
+    if args.mamba2_path == "fallback":
+        selected_mamba2_path = "fallback"
+    elif args.mamba2_path == "fused":
+        selected_mamba2_path = "fused" if causal_available else "unavailable"
+    else:
+        selected_mamba2_path = "fused" if causal_available else "fallback"
     return {
         "arguments": serializable_args(args),
         "physical_gpu_requested": PHYSICAL_GPU,
@@ -593,6 +930,9 @@ def environment_metadata(args: argparse.Namespace) -> dict[str, Any]:
         "torch": torch.__version__,
         "torch_cuda": torch.version.cuda,
         "mamba_ssm": getattr(mamba_ssm, "__version__", "unknown"),
+        "causal_conv1d_available": causal_available,
+        "causal_conv1d_detail": causal_detail,
+        "mamba2_execution_path": selected_mamba2_path,
         "started_at": time.strftime("%Y-%m-%d %H:%M:%S %z"),
     }
 
@@ -613,6 +953,13 @@ def main() -> int:
     dtype = torch_dtype(args.dtype)
     metadata = environment_metadata(args)
     print(json.dumps(metadata, indent=2), flush=True)
+    if metadata["mamba2_execution_path"] == "fallback":
+        MODEL_LABELS["mamba2"] = "Mamba-2 (fallback)"
+        print(
+            "\nMamba-2 fused causal-conv1d kernels are unavailable; "
+            "using the supported fallback path for this run.",
+            flush=True,
+        )
 
     results: list[Result] = []
     pretraining: dict[str, Any] = {}

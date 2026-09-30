@@ -4,6 +4,36 @@ import torch.nn.functional as F
 from mamba_ssm import Mamba2
 
 
+def mamba2_fused_kernels_available():
+    """Check the exact CUDA functions required by Mamba-2's fused path."""
+    try:
+        from causal_conv1d import causal_conv1d_fn
+        from mamba_ssm.ops.triton import ssd_combined
+
+        required = (
+            causal_conv1d_fn,
+            ssd_combined.causal_conv1d_fwd_function,
+            ssd_combined.causal_conv1d_bwd_function,
+        )
+        return all(callable(function) for function in required)
+    except Exception:
+        return False
+
+
+def make_mamba2(d_model, d_state, d_conv, expand, headdim=None):
+    """Build Mamba-2 with an automatic safe fallback for missing CUDA kernels."""
+    kwargs = {
+        "d_model": d_model,
+        "d_state": d_state,
+        "d_conv": d_conv,
+        "expand": expand,
+        "use_mem_eff_path": mamba2_fused_kernels_available(),
+    }
+    if headdim is not None:
+        kwargs["headdim"] = headdim
+    return Mamba2(**kwargs)
+
+
 #3D x, y, z
 class SAIE_Learned_Global(nn.Module):
     def __init__(self, hidden_dim=32):
@@ -38,8 +68,18 @@ class SAIE_Learned_Global(nn.Module):
         device = x.device
 
         # Convert coordinates to tensors [C_in, 3] and [C_out, 3]
-        in_pos = torch.tensor(list(input_coords.values()), dtype=torch.float32, device=device)
-        out_pos = torch.tensor(list(target_coords.values()), dtype=torch.float32, device=device)
+        coordinate_dtype = self.net[0].weight.dtype
+        in_pos = torch.as_tensor(
+            list(input_coords.values()), dtype=coordinate_dtype, device=device
+        )
+        out_pos = torch.as_tensor(
+            list(target_coords.values()), dtype=coordinate_dtype, device=device
+        )
+
+        if C_in != in_pos.shape[0]:
+            raise ValueError(
+                f"Input has {C_in} channels but input_coords has {in_pos.shape[0]} entries"
+            )
 
         # Compute pairwise 3D differences for all (out, in) channel pairs → [C_out, C_in, 3]
         diff = out_pos[:, None, :] - in_pos[None, :, :]
@@ -75,11 +115,23 @@ class DiffMamba(nn.Module):
         self.d_model = d_model
 
         self.team1 = nn.ModuleList([
-            Mamba2(d_model=headdim, d_state=d_state, d_conv=d_conv, expand=expand, headdim=headdim)
+            make_mamba2(
+                d_model=headdim,
+                d_state=d_state,
+                d_conv=d_conv,
+                expand=expand,
+                headdim=headdim,
+            )
             for _ in range(self.num_heads)
         ])
         self.team2 = nn.ModuleList([
-            Mamba2(d_model=headdim, d_state=d_state, d_conv=d_conv, expand=expand, headdim=headdim)
+            make_mamba2(
+                d_model=headdim,
+                d_state=d_state,
+                d_conv=d_conv,
+                expand=expand,
+                headdim=headdim,
+            )
             for _ in range(self.num_heads)
         ])
 
@@ -128,7 +180,12 @@ class DMBlock(nn.Module):
 class SingleMambaModel(nn.Module):
     def __init__(self, d_model, d_state, d_conv, expand):
         super().__init__()
-        self.mamba = Mamba2(d_model=d_model, d_state=d_state, d_conv=d_conv, expand=expand)
+        self.mamba = make_mamba2(
+            d_model=d_model,
+            d_state=d_state,
+            d_conv=d_conv,
+            expand=expand,
+        )
         self.norm = nn.RMSNorm(d_model)
         
     def forward(self, x):
@@ -258,4 +315,3 @@ class SAMBA(nn.Module):
             return out, d3
         else:
             return out
-

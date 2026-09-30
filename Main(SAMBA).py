@@ -1,8 +1,9 @@
 import os
 import sys
 
-# Add the fm directory to the system path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+# Make imports independent of the shell's current working directory.
+REPOSITORY_ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, REPOSITORY_ROOT)
 import argparse
 from types import SimpleNamespace
 import torch
@@ -30,7 +31,7 @@ parser.add_argument("--seed", type=int, default=3407)
 parser.add_argument('--device', type=str, default='cuda:0')
 parser.add_argument('--use_compile', type=str2bool, default=False, help="Enable torch.compile() to accelerate training")
 parser.add_argument('--num_workers', type=int, default=64, help='Number of DataLoader worker processes')
-parser.add_argument('--result_root', type=str, default='./fm/SAMBA/Checkpoints', help='Root directory for saving results')
+parser.add_argument('--result_root', type=str, default='./Checkpoints', help='Root directory for saving results')
 parser.add_argument('--save_log', type=str2bool, default=True, help='Whether to create logger or not')
 # ----------------------------------------- Train Parameters ----------------------------------------------
 parser.add_argument('--Training_mode', type=str, default='Reconstruction', choices=['Reconstruction', 'Linear_Probe', 'Fine_Tuning', 'Supervised', 'Nonlinear_Probe'], help='Training mode')
@@ -50,7 +51,7 @@ parser.add_argument('--anneal_strategy', type=str, default='cos', help='OneCyle 
 parser.add_argument('--pct_start', type=float, default=0.1, help='OneCyle percentage of total steps for increasing learning rate')
 parser.add_argument('--final_div_factor', type=float, default=100, help='OneCyle final div factor for learning rate')
 # ----------------------------------------- Checkpoing Setting --------------------------------------------------------
-parser.add_argument('--monitor_metric', type=str, default='Val/Loss', choices=['val_loss', 'train_loss', 'val_accuracy', 'val_mse'], help='Metric to monitor for checkpointing')
+parser.add_argument('--monitor_metric', type=str, default='val_loss', choices=['val_loss', 'train_loss', 'val_accuracy', 'val_mse'], help='Metric to monitor for checkpointing')
 parser.add_argument('--monitor_mode', type=str, default='min', choices=['min', 'max'], help='Whether lower or higher metric is better')
 parser.add_argument("--checkpoint_every_n_epoch", type=int, default=5, help="Number of the models to save")
 parser.add_argument('--save_last', type=str2bool, default=True, help='Whether to save the last model')
@@ -84,13 +85,14 @@ parser.add_argument('--TUAB_coord_path', type=str, default='./Montage/TUAB_16.xl
 parser.add_argument('--BCICP300_coord_path', type=str, default='./Montage/BCICP300_64.xlsx', help='Path to BCICP300 coordinate file')
 parser.add_argument('--PhysionetMI_coord_path', type=str, default='./Montage/PhysionetMI_64.xlsx', help='')
 parser.add_argument('--BNCI2014_001_coord_path', type=str, default='./Montage/BNCI2014_001_22.xlsx', help='Path to BNCI2014_001 coordinate file')
+parser.add_argument('--GrosseWentrup2009_coord_path', type=str, default='./Montage/GrosseWentrup2009_128.xlsx', help='Path to GrosseWentrup2009 coordinate file')
 parser.add_argument('--Emotiv_PhysionetMI_coord_path', type=str, default='./Montage/Emotiv_PhysionetMI.xlsx', help='')
 parser.add_argument('--Standard_coord_path', type=str, default='./Montage/standard_1020_positions.xlsx', help='Path to 94 EEG channels form Standard 10-20 system acqurired from MNE')
 # Inference
 parser.add_argument('--inference', type=str2bool, default=False, help='If true, load model from checkpoint for inference')
 parser.add_argument('--fine_numlayers_totrain', type=int, default=999, help='use for fine tuning. set a large number if you do not know the exactly layers of model')
 parser.add_argument('--finetune_epochs', type=int, default=5, help='Number of epochs for fine-tuning')
-parser.add_argument('--finetune_lr', type=int, default=1e-4)
+parser.add_argument('--finetune_lr', type=float, default=1e-4)
 # Oberservation metric 
 parser.add_argument('--class_weights', nargs='+', type=float, default=[1.0, 1.0], help='List of class weights, e.g., 1.0 5.0')
 parser.add_argument('--observation_logger', type=str2bool, default=False, help='Whether to logger observation log.')
@@ -129,7 +131,7 @@ if __name__ == "__main__":
             result = run_linear_probe(model, config, data, probe_type='Linear', seed = 3047)
             print('results:', result)
 
-        elif config.Training_mode == 'Finetune':
+        elif config.Training_mode == 'Fine_Tuning':
             result = run_downstream_finetune(model, config, data)
         else:
             raise ValueError("Downstream mode does not exist.")
