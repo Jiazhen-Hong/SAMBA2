@@ -50,6 +50,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
 import torch.nn as nn  # noqa: E402
+from torch.utils.checkpoint import checkpoint  # noqa: E402
 
 
 MODEL_LABELS = {
@@ -57,7 +58,7 @@ MODEL_LABELS = {
     "mamba2": "Mamba-2",
     "mamba3": "Mamba-3",
     "transformer": "Transformer",
-    "linear_transformer": "Linear Transformer",
+    "linear_transformer": "Linear Transformer (PyTorch reference)",
 }
 MODEL_COLORS = {
     "mamba1": "#4472C4",
@@ -83,6 +84,11 @@ class Result:
     peak_memory_gib: float | None = None
     latency_ms: float | None = None
     throughput_samples_per_ms: float | None = None
+    estimated_forward_gflops: float | None = None
+    estimated_dense_conv_gflops: float | None = None
+    estimated_core_gflops: float | None = None
+    effective_tflops: float | None = None
+    flop_status: str = "not_run"
     training_status: str = "not_run"
     peak_training_memory_gib: float | None = None
     parameter_count: int | None = None
@@ -131,6 +137,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expand", type=int, default=2)
     parser.add_argument("--d-conv", type=int, default=4)
     parser.add_argument("--headdim", type=int, default=64)
+    parser.add_argument("--mamba1-d-state", type=int, default=16)
+    parser.add_argument("--mamba2-d-state", type=int, default=64)
+    parser.add_argument("--mamba3-d-state", type=int, default=128)
     parser.add_argument(
         "--attention-heads",
         type=int,
@@ -142,6 +151,14 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=256,
         help="Chunk size for causal Linear Transformer prefix accumulation.",
+    )
+    parser.add_argument(
+        "--disable-linear-attention-checkpoint",
+        action="store_true",
+        help=(
+            "Keep all Linear Transformer chunk activations during training instead "
+            "of recomputing them in backward."
+        ),
     )
     parser.add_argument(
         "--mamba2-path",
@@ -224,6 +241,9 @@ def parse_args() -> argparse.Namespace:
         "expand",
         "d_conv",
         "headdim",
+        "mamba1_d_state",
+        "mamba2_d_state",
+        "mamba3_d_state",
         "attention_heads",
         "linear_attention_chunk_size",
         "repeats",
@@ -306,10 +326,10 @@ def build_mamba(kind: str, args: argparse.Namespace, dtype: torch.dtype) -> nn.M
 
     common = dict(d_model=args.d_model, expand=args.expand, dtype=dtype)
     if kind == "mamba1":
-        return Mamba(d_state=16, d_conv=args.d_conv, **common)
+        return Mamba(d_state=args.mamba1_d_state, d_conv=args.d_conv, **common)
     if kind == "mamba2":
         return Mamba2(
-            d_state=64,
+            d_state=args.mamba2_d_state,
             d_conv=args.d_conv,
             headdim=args.headdim,
             use_mem_eff_path=use_mamba2_fused_path(args),
@@ -320,7 +340,7 @@ def build_mamba(kind: str, args: argparse.Namespace, dtype: torch.dtype) -> nn.M
         # Mamba-3 path. Official guidance uses chunk 64 for BF16 SISO and 32 for FP32.
         chunk_size = 64 if dtype == torch.bfloat16 else 32
         return Mamba3(
-            d_state=128,
+            d_state=args.mamba3_d_state,
             headdim=args.headdim,
             is_mimo=False,
             chunk_size=chunk_size,
@@ -390,6 +410,7 @@ class CausalLinearAttention(nn.Module):
         self.num_heads = args.attention_heads
         self.head_dim = args.d_model // self.num_heads
         self.chunk_size = args.linear_attention_chunk_size
+        self.checkpoint_chunks = not args.disable_linear_attention_checkpoint
         self.qkv = nn.Linear(args.d_model, 3 * args.d_model, dtype=dtype)
         self.out_projection = nn.Linear(args.d_model, args.d_model, dtype=dtype)
 
@@ -428,24 +449,49 @@ class CausalLinearAttention(nn.Module):
             query_chunk = query[:, :, start:stop]
             key_chunk = key[:, :, start:stop]
             value_chunk = value[:, :, start:stop]
-            key_prefix = key_chunk.cumsum(dim=2) + key_state.unsqueeze(2)
-            key_value = torch.einsum(
-                "bhld,bhle->bhlde", key_chunk, value_chunk
-            )
-            key_value_prefix = key_value.cumsum(dim=2) + key_value_state.unsqueeze(2)
-            numerator = torch.einsum(
-                "bhld,bhlde->bhle", query_chunk, key_value_prefix
-            )
-            denominator = torch.einsum(
-                "bhld,bhld->bhl", query_chunk, key_prefix
-            ).unsqueeze(-1)
-            outputs.append(numerator / denominator.clamp_min(1e-6))
-            key_state = key_prefix[:, :, -1]
-            key_value_state = key_value_prefix[:, :, -1]
+            if self.training and self.checkpoint_chunks:
+                output_chunk, key_state, key_value_state = checkpoint(
+                    self._run_chunk,
+                    query_chunk,
+                    key_chunk,
+                    value_chunk,
+                    key_state,
+                    key_value_state,
+                    use_reentrant=False,
+                )
+            else:
+                output_chunk, key_state, key_value_state = self._run_chunk(
+                    query_chunk,
+                    key_chunk,
+                    value_chunk,
+                    key_state,
+                    key_value_state,
+                )
+            outputs.append(output_chunk)
 
         attended = torch.cat(outputs, dim=2)
         attended = attended.transpose(1, 2).reshape(batch, length, d_model)
         return self.out_projection(attended)
+
+    @staticmethod
+    def _run_chunk(
+        query_chunk: torch.Tensor,
+        key_chunk: torch.Tensor,
+        value_chunk: torch.Tensor,
+        key_state: torch.Tensor,
+        key_value_state: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        key_prefix = key_chunk.cumsum(dim=2) + key_state.unsqueeze(2)
+        key_value = torch.einsum("bhld,bhle->bhlde", key_chunk, value_chunk)
+        key_value_prefix = key_value.cumsum(dim=2) + key_value_state.unsqueeze(2)
+        numerator = torch.einsum(
+            "bhld,bhlde->bhle", query_chunk, key_value_prefix
+        )
+        denominator = torch.einsum(
+            "bhld,bhld->bhl", query_chunk, key_prefix
+        ).unsqueeze(-1)
+        output = numerator / denominator.clamp_min(1e-6)
+        return output, key_prefix[:, :, -1], key_value_prefix[:, :, -1]
 
 
 class AttentionResidualBlock(nn.Module):
@@ -656,6 +702,80 @@ def release_cuda() -> None:
     torch.cuda.synchronize()
 
 
+def estimate_forward_flops(
+    model: nn.Module,
+    kind: str,
+    length: int,
+    args: argparse.Namespace,
+) -> dict[str, float]:
+    """Estimate major forward FLOPs without executing an additional pass.
+
+    Matrix multiply and convolution multiply-adds count as two FLOPs. Normalization,
+    bias, activation, masking, and output-loss operations are omitted. For all Mamba
+    versions, the recurrent/scan core uses the same documented selective-scan proxy
+    (9 * B * L * d_inner * d_state), so Mamba-2/3 values are comparative estimates,
+    not exact CUDA instruction counts.
+    """
+    batch = args.batch_size
+    dense_flops = 0
+    convolution_flops = 0
+    for module in model.modules():
+        if isinstance(module, nn.Linear):
+            dense_flops += 2 * batch * length * module.weight.numel()
+        elif isinstance(module, nn.Conv1d):
+            convolution_flops += 2 * batch * length * module.weight.numel()
+
+    if kind in ("mamba1", "mamba2", "mamba3"):
+        d_state = {
+            "mamba1": args.mamba1_d_state,
+            "mamba2": args.mamba2_d_state,
+            "mamba3": args.mamba3_d_state,
+        }[kind]
+        d_inner = args.expand * args.d_model
+        core_flops = 9 * batch * length * d_inner * d_state * args.layers
+    elif kind == "transformer":
+        # Two causal attention matmuls: QK^T and attention @ V. Each only uses
+        # L * (L + 1) / 2 causal pairs, and each multiply-add counts as 2 FLOPs.
+        core_flops = (
+            2
+            * batch
+            * length
+            * (length + 1)
+            * args.d_model
+            * args.layers
+        )
+    elif kind == "linear_transformer":
+        head_dim = args.d_model // args.attention_heads
+        # Per token/head: KV outer product + prefix addition + q(KV), plus the
+        # key-prefix update and denominator dot product.
+        per_token_head = 4 * head_dim * head_dim + 3 * head_dim
+        core_flops = (
+            batch
+            * length
+            * args.attention_heads
+            * per_token_head
+            * args.layers
+        )
+    else:
+        raise ValueError(f"Unknown model kind: {kind}")
+
+    dense_conv_flops = dense_flops + convolution_flops
+    total_flops = dense_conv_flops + core_flops
+    scale = 1e9
+    return {
+        "total_gflops": total_flops / scale,
+        "dense_conv_gflops": dense_conv_flops / scale,
+        "core_gflops": core_flops / scale,
+    }
+
+
+def attach_flop_estimate(result: Result, estimate: dict[str, float]) -> None:
+    result.estimated_forward_gflops = estimate["total_gflops"]
+    result.estimated_dense_conv_gflops = estimate["dense_conv_gflops"]
+    result.estimated_core_gflops = estimate["core_gflops"]
+    result.flop_status = "ok"
+
+
 def benchmark_one_length(
     model: nn.Module,
     kind: str,
@@ -696,6 +816,9 @@ def benchmark_one_length(
     latency_ms = float(np.median(timings))
     peak_gib = torch.cuda.max_memory_allocated(device) / (1024**3)
     throughput = args.batch_size * length / latency_ms
+    flop_estimate = estimate_forward_flops(model, kind, length, args)
+    # Numerically, GFLOPs / ms equals TFLOP/s.
+    effective_tflops = flop_estimate["total_gflops"] / latency_ms
     del eeg, output, start_events, end_events
     return Result(
         model=kind,
@@ -704,6 +827,11 @@ def benchmark_one_length(
         peak_memory_gib=peak_gib,
         latency_ms=latency_ms,
         throughput_samples_per_ms=throughput,
+        estimated_forward_gflops=flop_estimate["total_gflops"],
+        estimated_dense_conv_gflops=flop_estimate["dense_conv_gflops"],
+        estimated_core_gflops=flop_estimate["core_gflops"],
+        effective_tflops=effective_tflops,
+        flop_status="ok",
         parameter_count=parameter_count,
     )
 
@@ -804,6 +932,7 @@ def plot_metric(
     title: str,
     path: Path,
     log_x: bool = True,
+    log_y: bool = False,
     status_field: str = "status",
 ) -> None:
     figure, axis = plt.subplots(figsize=(9.2, 6.2), constrained_layout=True)
@@ -884,6 +1013,8 @@ def plot_metric(
 
     if log_x:
         axis.set_xscale("log", base=2)
+    if log_y and successful_values:
+        axis.set_yscale("log")
     axis.set_xlabel("EEG sequence length (samples)")
     axis.set_ylabel(ylabel)
     axis.set_title(title)
@@ -919,13 +1050,32 @@ def plot_all(results: list[Result], models: list[str], output_dir: Path) -> None
         output_dir / "eeg_models_training_memory.png",
         status_field="training_status",
     )
+    plot_metric(
+        results,
+        models,
+        "estimated_forward_gflops",
+        "Estimated forward computation (GFLOPs)",
+        "EEG sequence-model forward computational cost",
+        output_dir / "eeg_models_forward_flops.png",
+        log_y=True,
+        status_field="flop_status",
+    )
 
     memory_image = plt.imread(output_dir / "eeg_models_inference_memory.png")
     speed_image = plt.imread(output_dir / "eeg_models_inference_speed.png")
-    figure, axes = plt.subplots(1, 2, figsize=(18, 6.3), constrained_layout=True)
+    flops_image = plt.imread(output_dir / "eeg_models_forward_flops.png")
+    figure, axes = plt.subplots(1, 3, figsize=(27, 6.3), constrained_layout=True)
     axes[0].imshow(memory_image)
     axes[1].imshow(speed_image)
-    for axis, label in zip(axes, ("(a) Memory usage", "(b) Inference speed")):
+    axes[2].imshow(flops_image)
+    for axis, label in zip(
+        axes,
+        (
+            "(a) Inference memory",
+            "(b) Inference speed",
+            "(c) Estimated forward FLOPs",
+        ),
+    ):
         axis.axis("off")
         axis.set_title(label, y=-0.06, fontsize=13)
     figure.savefig(output_dir / "eeg_models_combined.png", dpi=180)
@@ -958,6 +1108,16 @@ def environment_metadata(args: argparse.Namespace) -> dict[str, Any]:
         "causal_conv1d_available": causal_available,
         "causal_conv1d_detail": causal_detail,
         "mamba2_execution_path": selected_mamba2_path,
+        "flop_estimation": {
+            "multiply_add_convention": "2 FLOPs",
+            "included": "linear weights, Conv1d weights, and model core",
+            "omitted": "normalization, bias, activation, masking, and loss",
+            "mamba_scan_proxy": "9 * B * L * d_inner * d_state per layer",
+            "warning": (
+                "Mamba-2/3 values are comparative analytical estimates, not "
+                "exact CUDA/Triton hardware instruction counts."
+            ),
+        },
         "started_at": time.strftime("%Y-%m-%d %H:%M:%S %z"),
     }
 
@@ -1022,6 +1182,7 @@ def main() -> int:
             saw_inference_oom = False
             saw_training_oom = False
             for length in args.lengths:
+                length_flops = estimate_forward_flops(model, kind, length, args)
                 training_status = "not_run"
                 training_peak = None
                 training_error = ""
@@ -1076,6 +1237,7 @@ def main() -> int:
                         error="Skipped by model inference safety limit.",
                         training_error=training_error,
                     )
+                    attach_flop_estimate(result, length_flops)
                     results.append(result)
                     write_results(results, args.output_dir)
                     plot_all(results, args.models, args.output_dir)
@@ -1091,6 +1253,7 @@ def main() -> int:
                         error="Skipped because a shorter inference sequence caused OOM.",
                         training_error=training_error,
                     )
+                    attach_flop_estimate(result, length_flops)
                     results.append(result)
                     write_results(results, args.output_dir)
                     plot_all(results, args.models, args.output_dir)
@@ -1112,7 +1275,9 @@ def main() -> int:
                     print(
                         f"  L={length:>7} infer: {result.peak_memory_gib:.3f} GiB, "
                         f"{result.latency_ms:.3f} ms, "
-                        f"{result.throughput_samples_per_ms:.2f} samples/ms",
+                        f"{result.throughput_samples_per_ms:.2f} samples/ms, "
+                        f"{result.estimated_forward_gflops:.2f} estimated GFLOPs, "
+                        f"{result.effective_tflops:.2f} estimated TFLOP/s",
                         flush=True,
                     )
                 except BaseException as exc:
@@ -1127,6 +1292,7 @@ def main() -> int:
                         error=compact_error(exc),
                         training_error=training_error,
                     )
+                    attach_flop_estimate(result, length_flops)
                     print(
                         f"  L={length:>7} infer: {status.upper()} - {result.error}",
                         flush=True,
