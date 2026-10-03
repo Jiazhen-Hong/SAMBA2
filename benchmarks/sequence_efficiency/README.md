@@ -48,6 +48,8 @@ Check the import and detected backends:
 python benchmarks/sequence_efficiency/benchmark.py --gpu 1 --list-backends
 ```
 
+The backend listing checks the installed FA4 package without importing it. This is intentional: FA4 and Mamba-3 both use TVM-related runtimes, and importing FA4 before Mamba-3 can cause duplicate global type registration. The actual FA4 import and CUDA execution are tested when the `flash4` benchmark runs.
+
 Run a short FA4 test:
 
 ```bash

@@ -80,15 +80,12 @@ def package_version(name: str) -> str | None:
 
 
 def backend_status() -> dict[str, str]:
+    fa4_version = package_version("flash-attn-4")
     out = {"transformer_math": "available: native PyTorch operations",
            "pytorch_sdpa": "available: torch.nn.functional.scaled_dot_product_attention",
            "linear_transformer": "available: native PyTorch operations",
-           "flash4": "flash-attn-4 / flash_attn.cute not importable"}
-    try:
-        from flash_attn.cute import flash_attn_func  # noqa: F401
-        out["flash4"] = f"available: flash-attn-4 {package_version('flash-attn-4') or 'unknown'}"
-    except Exception as exc:
-        out["flash4"] += f" ({type(exc).__name__}: {exc})"
+           "flash4": (f"installed: flash-attn-4 {fa4_version}; runtime import is tested lazily"
+                      if fa4_version else "flash-attn-4 is not installed")}
     return out
 
 
@@ -262,7 +259,7 @@ def estimate_flops(name: str, a: argparse.Namespace, length: int) -> float:
 
 
 def unsupported_reason(name: str, statuses: dict[str, str]) -> str | None:
-    if name == "flash4" and not statuses[name].startswith("available"):
+    if name == "flash4" and not statuses[name].startswith("installed"):
         return statuses[name]
     return None
 
@@ -334,6 +331,11 @@ def main() -> None:
         raise SystemExit("CUDA is required")
     torch.manual_seed(a.seed); torch.cuda.manual_seed_all(a.seed)
     dtype = getattr(torch, a.dtype)
+    # Mamba-3 and FA4 both touch TVM-related global registries. When both are
+    # requested, initialize Mamba/TileLang first; eager FA4 import can otherwise
+    # create fallback TVM-FFI classes that bundled TVM is unable to replace.
+    if "flash4" in a.models and any(name.startswith("mamba") for name in a.models):
+        import mamba_ssm  # noqa: F401
     rows: list[Result] = []
     protocols = ["width", "params"] if a.protocol == "both" else [a.protocol]
     target_args = copy.copy(a)
