@@ -102,96 +102,159 @@ SAMBA/
 └── README.md            # Project overview
 ```
 
-## Axon command reference
+## Axon experiment command reference
 
-Run these commands from the repository root after pulling the latest code.
+This section is the copy-and-run record for Axon. Run every command from `~/Github/SAMBA2`. The standalone benchmark does not import the SAMBA architecture.
 
-### Check the environment
+### 1. Update the repository
 
 ```bash
 cd ~/Github/SAMBA2
 git pull
-CUDA_VISIBLE_DEVICES=1 python -c "import torch, mamba_ssm; print(torch.__version__, torch.version.cuda, mamba_ssm.__version__); print(torch.cuda.get_device_name(0))"
 ```
 
-### Standalone fair efficiency benchmark
+### 2. Keep two isolated environments
 
-This benchmark is independent of SAMBA. It compares simple sequence blocks using matched input shape, width, layer count, precision, and batch size. The plain Transformer explicitly uses mathematical attention and cannot silently select a Flash kernel. Full details are in [`benchmarks/sequence_efficiency/README.md`](benchmarks/sequence_efficiency/README.md).
+Mamba-3 and FlashAttention-4 require incompatible TVM-FFI versions. Never install FA4 into the `mamba` environment.
 
-Install FlashAttention 4 for the Blackwell GPU. It is currently a prerelease, so the version is pinned for reproducibility:
+The tested Mamba environment uses:
 
-```bash
-pip install "flash-attn-4==4.0.0b33"
+```text
+mamba-ssm          2.3.2.post1
+tilelang           0.1.8
+apache-tvm-ffi     0.1.9
+quack-kernels      0.6.5
+nvidia-cutlass-dsl 4.8.0
 ```
 
-Inspect the available attention backends:
+Verify it with:
 
 ```bash
+conda activate mamba
+CUDA_VISIBLE_DEVICES=1 python - <<'PY'
+import tilelang, mamba_ssm
+from mamba_ssm import Mamba, Mamba2, Mamba3
+print("TileLang:", tilelang.__version__)
+print("mamba_ssm:", mamba_ssm.__version__)
+print("GPU imports: OK")
+PY
+```
+
+FA4 is installed only in the separate `fa4` environment:
+
+```bash
+conda activate fa4
+python -m pip install "flash-attn-4==4.0.0b33"
 python benchmarks/sequence_efficiency/benchmark.py --gpu 1 --list-backends
 ```
 
-Run the width-matched experiment on GPU 1:
+### 3. Width-matched experiment
+
+This protocol fixes `d_model=256`, four layers, batch size, sequence length, dtype, and GPU. Parameter count and FLOPs are measured outcomes.
+
+Run Mamba and the non-FA4 Transformer models:
 
 ```bash
-python benchmarks/sequence_efficiency/benchmark.py \
-  --gpu 1 \
-  --protocol width \
-  --models mamba1 mamba2 mamba3 transformer_math pytorch_sdpa linear_transformer flash4 \
-  --lengths 256 512 1024 2048 4096 8192 16384 \
-  --batch-size 1 --d-model 256 --layers 4 --heads 8 \
-  --d-state 64 --headdim 64 --dtype bfloat16
-```
-
-Run the parameter-matched experiment:
-
-```bash
-python benchmarks/sequence_efficiency/benchmark.py \
-  --gpu 1 --protocol params \
-  --models mamba1 mamba2 mamba3 transformer_math pytorch_sdpa linear_transformer flash4 \
-  --lengths 256 512 1024 2048 4096 8192 16384 \
-  --batch-size 1 --d-model 256 --layers 4 --heads 8 \
-  --d-state 64 --headdim 64 --dtype bfloat16
-```
-
-Run a short smoke test before the full benchmark:
-
-```bash
+conda activate mamba
+cd ~/Github/SAMBA2
 python benchmarks/sequence_efficiency/benchmark.py \
   --gpu 1 --protocol width \
-  --models mamba1 mamba2 mamba3 transformer_math pytorch_sdpa linear_transformer flash4 \
-  --lengths 256 1024 --warmup 2 --repeats 3 --train-repeats 2
+  --models mamba1 mamba2 mamba3 transformer_math pytorch_sdpa linear_transformer \
+  --lengths 256 512 1024 2048 4096 8192 16384 32768 \
+  --batch-size 1 --d-model 256 --layers 4 --heads 8 --ffn-mult 4 \
+  --d-state 64 --headdim 64 --d-conv 4 --expand 2 \
+  --dtype bfloat16 --warmup 10 --repeats 50 --train-repeats 10 \
+  --memory-limit-gib 90 \
+  --output Results/sequence_efficiency_width_mamba
 ```
 
-Run only inference:
+Run FA4 with exactly the same experimental arguments:
 
 ```bash
+conda activate fa4
+cd ~/Github/SAMBA2
 python benchmarks/sequence_efficiency/benchmark.py \
-  --gpu 1 --protocol both \
-  --models mamba1 mamba2 mamba3 transformer_math pytorch_sdpa linear_transformer flash4 \
-  --skip-training
+  --gpu 1 --protocol width --models flash4 \
+  --lengths 256 512 1024 2048 4096 8192 16384 32768 \
+  --batch-size 1 --d-model 256 --layers 4 --heads 8 --ffn-mult 4 \
+  --d-state 64 --headdim 64 --d-conv 4 --expand 2 \
+  --dtype bfloat16 --warmup 10 --repeats 50 --train-repeats 10 \
+  --memory-limit-gib 90 \
+  --output Results/sequence_efficiency_width_fa4
 ```
 
-Results are written to `Results/sequence_efficiency/`. If FlashAttention 4 is not importable, it remains in the CSV with an explicit `UNSUPPORTED` status.
-
-### Existing EEG benchmark
-
-The older EEG-oriented benchmark remains available for reproducing the earlier figures:
-
-```bash
-python notebook/benchmark_mamba_eeg.py --gpu 1 --models mamba1 mamba2 mamba3 transformer linear_transformer
-```
-
-Its options and output files are documented in [`notebook/README.md`](notebook/README.md).
-
-### Merge Mamba and FlashAttention 4 runs
-
-Mamba-3 and FlashAttention 4 require incompatible TVM-FFI versions, so run them in separate Conda environments with identical benchmark arguments. Merge and plot their results afterward:
+Merge and redraw without rerunning the models:
 
 ```bash
 python benchmarks/sequence_efficiency/merge_results.py \
-  Results/sequence_efficiency_mamba \
-  Results/sequence_efficiency_fa4 \
-  --output Results/sequence_efficiency_combined
+  Results/sequence_efficiency_width_mamba \
+  Results/sequence_efficiency_width_fa4 \
+  --output Results/sequence_efficiency_width_combined
 ```
 
-The merge command checks that the experimental settings match before placing all methods in the same CSV and figure.
+### 4. Parameter-matched experiment
+
+This protocol uses the four-layer, width-256 mathematical Transformer as the parameter target. It automatically searches a legal width for every model, then records the selected width, actual parameters, and matching error. Layers, sequence lengths, batch size, dtype, and GPU remain equal. FLOPs are reported rather than matched.
+
+Run Mamba and the non-FA4 Transformer models:
+
+```bash
+conda activate mamba
+cd ~/Github/SAMBA2
+python benchmarks/sequence_efficiency/benchmark.py \
+  --gpu 1 --protocol params \
+  --models mamba1 mamba2 mamba3 transformer_math pytorch_sdpa linear_transformer \
+  --lengths 256 512 1024 2048 4096 8192 16384 32768 \
+  --batch-size 1 --d-model 256 --layers 4 --heads 8 --ffn-mult 4 \
+  --d-state 64 --headdim 64 --d-conv 4 --expand 2 \
+  --dtype bfloat16 --warmup 10 --repeats 50 --train-repeats 10 \
+  --memory-limit-gib 90 --parameter-tolerance 0.03 \
+  --output Results/sequence_efficiency_params_mamba
+```
+
+Run parameter-matched FA4:
+
+```bash
+conda activate fa4
+cd ~/Github/SAMBA2
+python benchmarks/sequence_efficiency/benchmark.py \
+  --gpu 1 --protocol params --models flash4 \
+  --lengths 256 512 1024 2048 4096 8192 16384 32768 \
+  --batch-size 1 --d-model 256 --layers 4 --heads 8 --ffn-mult 4 \
+  --d-state 64 --headdim 64 --d-conv 4 --expand 2 \
+  --dtype bfloat16 --warmup 10 --repeats 50 --train-repeats 10 \
+  --memory-limit-gib 90 --parameter-tolerance 0.03 \
+  --output Results/sequence_efficiency_params_fa4
+```
+
+Merge the parameter-matched results:
+
+```bash
+python benchmarks/sequence_efficiency/merge_results.py \
+  Results/sequence_efficiency_params_mamba \
+  Results/sequence_efficiency_params_fa4 \
+  --output Results/sequence_efficiency_params_combined
+```
+
+### 5. Result files
+
+Each raw run contains `results.csv`, `metadata.json`, and its own figure. Each combined directory contains:
+
+```text
+results_combined.csv
+metadata_combined.json
+efficiency_summary_combined.png
+efficiency_summary_combined_log.png
+```
+
+The log-scale figure is usually easier to read. The plotting-only horizontal offsets expose overlapping curves and do not modify stored sequence lengths.
+
+### 6. Older EEG-oriented benchmark
+
+```bash
+conda activate mamba
+python notebook/benchmark_mamba_eeg.py \
+  --gpu 1 --models mamba1 mamba2 mamba3 transformer linear_transformer
+```
+
+See [`benchmarks/sequence_efficiency/README.md`](benchmarks/sequence_efficiency/README.md) for metric definitions and [`notebook/README.md`](notebook/README.md) for the older benchmark.
