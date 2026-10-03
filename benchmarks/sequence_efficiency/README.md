@@ -72,4 +72,4 @@ python benchmarks/sequence_efficiency/merge_results.py \
   --output Results/sequence_efficiency_combined
 ```
 
-The script refuses to merge runs with different lengths, batch size, layers, heads, dtype, or architecture settings. It writes `results_combined.csv`, `metadata_combined.json`, and `efficiency_summary_combined.png`.
+The script refuses to merge runs with different lengths, batch size, layers, heads, dtype, or architecture settings. It writes `results_combined.csv`, `metadata_combined.json`, a linear-scale figure, and `efficiency_summary_combined_log.png`. Curves use distinct colors, markers, and line styles. A tiny display-only horizontal offset reveals values that overlap exactly; the CSV values are unchanged.

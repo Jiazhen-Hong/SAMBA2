@@ -27,6 +27,24 @@ CHECKED_ARGS = [
     "lengths", "batch_size", "layers", "heads", "ffn_mult", "d_state",
     "headdim", "d_conv", "expand", "dtype",
 ]
+MODEL_STYLES = {
+    "mamba1": ("#2ca02c", "o", "-"),
+    "mamba2": ("#d62728", "s", "--"),
+    "mamba3": ("#9467bd", "^", "-."),
+    "transformer_math": ("#e377c2", "X", ":"),
+    "pytorch_sdpa": ("#8c564b", "D", "--"),
+    "linear_transformer": ("#ff7f0e", "P", "-."),
+    "flash4": ("#1f77b4", "v", "-"),
+}
+DISPLAY_NAMES = {
+    "mamba1": "Mamba-1",
+    "mamba2": "Mamba-2",
+    "mamba3": "Mamba-3",
+    "transformer_math": "Transformer (Math)",
+    "pytorch_sdpa": "Transformer (PyTorch SDPA)",
+    "linear_transformer": "Linear Transformer (ELU+1)",
+    "flash4": "Transformer (FlashAttention-4)",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -71,7 +89,7 @@ def value(row: dict, field: str):
     return NUMERIC_FIELDS.get(field, str)(raw)
 
 
-def write_plot(rows: list[dict], output: Path) -> None:
+def write_plot(rows: list[dict], output: Path, log_y: bool = False) -> None:
     try:
         import matplotlib.pyplot as plt
     except ImportError:
@@ -85,27 +103,58 @@ def write_plot(rows: list[dict], output: Path) -> None:
         ("training_peak_gib", "Training peak memory (GiB)"),
         ("forward_gflops", "Estimated forward GFLOPs"),
     ]
-    series = sorted({(row["protocol"], row["model"]) for row in rows})
+    model_order = list(MODEL_STYLES)
+    series = sorted(
+        {(row["protocol"], row["model"]) for row in rows},
+        key=lambda item: (item[0], model_order.index(item[1])
+                          if item[1] in model_order else len(model_order)),
+    )
     protocols = {protocol for protocol, _ in series}
-    fig, axes = plt.subplots(2, 3, figsize=(19, 11))
+    offsets = {item: index - (len(series) - 1) / 2 for index, item in enumerate(series)}
+    fig, axes = plt.subplots(2, 3, figsize=(21, 12))
     for axis, (field, title) in zip(axes.flat, metrics):
         for protocol, model in series:
             selected = [row for row in rows if row["protocol"] == protocol
                         and row["model"] == model and value(row, field) is not None]
             selected.sort(key=lambda row: value(row, "length"))
             if selected:
-                label = f"{model} [{protocol}]" if len(protocols) > 1 else model
-                axis.plot([value(row, "length") for row in selected],
-                          [value(row, field) for row in selected], marker="o", label=label)
+                width = value(selected[0], "d_model")
+                parameters = value(selected[0], "parameters")
+                name = DISPLAY_NAMES.get(model, model)
+                detail = f"d={width}, {parameters / 1e6:.2f}M" if width and parameters else ""
+                label = f"{name} ({detail})"
+                if len(protocols) > 1:
+                    label += f" [{protocol}]"
+                color, marker, linestyle = MODEL_STYLES.get(model, (None, "o", "-"))
+                # A sub-percent shift on the log2 x-axis exposes exactly
+                # overlapping curves without changing any stored measurement.
+                shift = offsets[(protocol, model)] * 0.012
+                x_values = [value(row, "length") * (2 ** shift) for row in selected]
+                axis.plot(
+                    x_values, [value(row, field) for row in selected],
+                    color=color, marker=marker, linestyle=linestyle,
+                    linewidth=2.0, markersize=7, markerfacecolor="white",
+                    markeredgewidth=1.8, alpha=0.92, label=label,
+                )
         axis.set_xscale("log", base=2)
+        if log_y:
+            axis.set_yscale("log")
         axis.set_title(title)
         axis.set_xlabel("Sequence length")
-        axis.grid(alpha=0.3)
+        axis.grid(which="both", alpha=0.25)
     handles, labels = axes.flat[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="lower center", ncol=min(4, max(1, len(labels))))
-    fig.suptitle("Sequence efficiency across isolated environments")
-    fig.tight_layout(rect=(0, 0.08, 1, 0.96))
-    fig.savefig(output / "efficiency_summary_combined.png", dpi=180)
+    fig.legend(handles, labels, loc="lower center", ncol=min(3, max(1, len(labels))),
+               frameon=True, fontsize=10)
+    scale_note = "Log y-axis. " if log_y else ""
+    fig.suptitle("Sequence-model efficiency across isolated environments", fontsize=16)
+    fig.text(
+        0.5, 0.015,
+        scale_note + "Markers are shifted slightly on the log2 x-axis only to reveal overlapping curves; stored x values are unchanged.",
+        ha="center", fontsize=9, color="dimgray",
+    )
+    fig.tight_layout(rect=(0, 0.12, 1, 0.96))
+    filename = "efficiency_summary_combined_log.png" if log_y else "efficiency_summary_combined.png"
+    fig.savefig(output / filename, dpi=220, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -139,6 +188,7 @@ def main() -> None:
         json.dumps(combined_metadata, indent=2) + "\n"
     )
     write_plot(all_rows, args.output)
+    write_plot(all_rows, args.output, log_y=True)
     print(f"Merged {len(all_rows)} rows into {args.output}")
 
 
