@@ -1,36 +1,60 @@
 # Standalone sequence efficiency benchmark
 
-This benchmark does not import or run SAMBA. Every model receives the same random tensor with shape `[batch, sequence, d_model]`.
+This benchmark does not import SAMBA. Every model uses the same sequence length, batch size, layer count, dtype, and GPU.
 
-The attention models share the same pre-norm residual block, QKV projection, output projection, and FFN. Only the attention implementation changes. The Mamba models use the same width, layer count, expansion ratio, convolution width, and state size. Parameter counts and analytical FLOPs are reported because equal width does not imply equal parameter count or equal work.
+## Methods
 
-## What is compared
+- `mamba1`, `mamba2`, `mamba3`: official `mamba_ssm` blocks.
+- `transformer_math`: handwritten causal softmax attention that explicitly materializes the attention matrix.
+- `pytorch_sdpa`: the same QKV, output projection, residual, and FFN structure, with `torch.nn.functional.scaled_dot_product_attention` as its attention operation. PyTorch selects its optimized CUDA backend at runtime.
+- `linear_transformer`: handwritten causal linear attention with the ELU+1 feature map.
+- `flash4`: FlashAttention 4 through `flash_attn.cute.flash_attn_func`.
 
-- `mamba1`, `mamba2`, `mamba3`: official classes from the installed `mamba_ssm` package.
-- `transformer`: a plain mathematical causal attention baseline that explicitly materializes the attention matrix. It cannot silently select a Flash kernel.
-- `linear_transformer`: causal ELU feature-map linear attention written in PyTorch. This is a different attention algorithm.
-- `flash1` to `flash4`: version-specific official FlashAttention kernels when importable.
+The three exact-attention methods share the same surrounding Transformer block. Only the attention operation changes. Linear attention keeps the same surrounding block but changes the attention algorithm. Mamba uses its native residual block.
 
-FlashAttention is an implementation of exact attention, not a separate model architecture. FlashAttention generations are not normally all available from one Python environment. FlashAttention 1 requires a legacy 1.x environment. FlashAttention 3 uses the Hopper package. FlashAttention 4 uses the CuTeDSL package and targets Hopper and Blackwell. Missing or incompatible kernels are recorded as `UNSUPPORTED`; they are never replaced silently.
+## Comparison protocols
 
-## Metrics
+`--protocol width` keeps `d_model`, layers, sequence length, batch size, dtype, and hardware equal. Parameters and FLOPs are measured outcomes rather than matching targets.
 
-- Median and p95 inference latency after warmup
-- Token throughput
-- Peak allocated inference memory
-- Full training-step latency and peak memory, including forward, backward, and AdamW
-- Parameter count
-- Analytical forward FLOPs and effective TFLOP/s
-- OOM, runtime error, unsupported backend, and safety-limit status
+`--protocol params` uses the four-layer, width-256 mathematical Transformer as the default parameter target. It searches legal widths in increments of 32 for every method and records the selected width, actual parameter count, and matching error.
 
-CUDA events measure GPU time. `torch.cuda.max_memory_allocated()` measures tensor memory allocated by PyTorch, not the whole GPU process. FLOPs count a multiply-add as two operations. Mamba selective-scan FLOPs are a documented analytical proxy, so comparisons with profiler-reported hardware FLOPs should be labeled separately.
+`--protocol both` runs both protocols. Equal width and equal parameter count answer different questions, so their curves are labeled separately.
 
-## Outputs
+No experiment can simultaneously hold width, depth, parameter count, and FLOPs equal across these architectures. FLOPs therefore remain a reported result in both protocols.
 
-The default output directory is `Results/sequence_efficiency/`:
+## Metrics and outputs
 
-- `results.csv`: all raw measurements and statuses
-- `metadata.json`: command settings, package versions, GPU, and backend detection
-- `efficiency_summary.png`: latency, throughput, memory, and FLOPs plots
+The benchmark records parameter count, analytical forward FLOPs, median and p95 inference latency, throughput, inference peak memory, full AdamW training-step latency and peak memory, effective TFLOP/s, and failure status.
 
-See the Axon command reference at the end of the repository root `README.md`.
+CUDA events measure GPU time. `torch.cuda.max_memory_allocated()` measures PyTorch tensor memory, not whole-process GPU memory. A multiply-add counts as two FLOPs. The Mamba scan count is an explicit analytical proxy.
+
+Outputs under `Results/sequence_efficiency/`:
+
+- `results.csv`
+- `metadata.json`
+- `efficiency_summary.png`
+
+## FlashAttention 4 on Axon
+
+FlashAttention 4 is currently published as a prerelease. Install a fixed version for reproducibility:
+
+```bash
+pip install "flash-attn-4==4.0.0b33"
+```
+
+Check the import and detected backends:
+
+```bash
+python benchmarks/sequence_efficiency/benchmark.py --gpu 1 --list-backends
+```
+
+Run a short FA4 test:
+
+```bash
+python benchmarks/sequence_efficiency/benchmark.py \
+  --gpu 1 --protocol width --models flash4 \
+  --lengths 256 1024 --warmup 2 --repeats 3 --train-repeats 2 \
+  --output Results/sequence_efficiency_flash4_smoke
+```
+
+See the complete command list at the end of the repository root `README.md`.

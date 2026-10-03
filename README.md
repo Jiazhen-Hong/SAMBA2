@@ -118,18 +118,36 @@ CUDA_VISIBLE_DEVICES=1 python -c "import torch, mamba_ssm; print(torch.__version
 
 This benchmark is independent of SAMBA. It compares simple sequence blocks using matched input shape, width, layer count, precision, and batch size. The plain Transformer explicitly uses mathematical attention and cannot silently select a Flash kernel. Full details are in [`benchmarks/sequence_efficiency/README.md`](benchmarks/sequence_efficiency/README.md).
 
-First inspect which FlashAttention generations are actually importable:
+Install FlashAttention 4 for the Blackwell GPU. It is currently a prerelease, so the version is pinned for reproducibility:
+
+```bash
+pip install "flash-attn-4==4.0.0b33"
+```
+
+Inspect the available attention backends:
 
 ```bash
 python benchmarks/sequence_efficiency/benchmark.py --gpu 1 --list-backends
 ```
 
-Run all available methods on GPU 1:
+Run the width-matched experiment on GPU 1:
 
 ```bash
 python benchmarks/sequence_efficiency/benchmark.py \
   --gpu 1 \
-  --models mamba1 mamba2 mamba3 transformer linear_transformer flash1 flash2 flash3 flash4 \
+  --protocol width \
+  --models mamba1 mamba2 mamba3 transformer_math pytorch_sdpa linear_transformer flash4 \
+  --lengths 256 512 1024 2048 4096 8192 16384 \
+  --batch-size 1 --d-model 256 --layers 4 --heads 8 \
+  --d-state 64 --headdim 64 --dtype bfloat16
+```
+
+Run the parameter-matched experiment:
+
+```bash
+python benchmarks/sequence_efficiency/benchmark.py \
+  --gpu 1 --protocol params \
+  --models mamba1 mamba2 mamba3 transformer_math pytorch_sdpa linear_transformer flash4 \
   --lengths 256 512 1024 2048 4096 8192 16384 \
   --batch-size 1 --d-model 256 --layers 4 --heads 8 \
   --d-state 64 --headdim 64 --dtype bfloat16
@@ -139,7 +157,8 @@ Run a short smoke test before the full benchmark:
 
 ```bash
 python benchmarks/sequence_efficiency/benchmark.py \
-  --gpu 1 --models mamba1 mamba2 mamba3 transformer linear_transformer \
+  --gpu 1 --protocol width \
+  --models mamba1 mamba2 mamba3 transformer_math pytorch_sdpa linear_transformer flash4 \
   --lengths 256 1024 --warmup 2 --repeats 3 --train-repeats 2
 ```
 
@@ -147,11 +166,12 @@ Run only inference:
 
 ```bash
 python benchmarks/sequence_efficiency/benchmark.py \
-  --gpu 1 --models mamba1 mamba2 mamba3 transformer linear_transformer \
+  --gpu 1 --protocol both \
+  --models mamba1 mamba2 mamba3 transformer_math pytorch_sdpa linear_transformer flash4 \
   --skip-training
 ```
 
-Results are written to `Results/sequence_efficiency/`. Unsupported FlashAttention generations remain in the CSV with an explicit `UNSUPPORTED` status.
+Results are written to `Results/sequence_efficiency/`. If FlashAttention 4 is not importable, it remains in the CSV with an explicit `UNSUPPORTED` status.
 
 ### Existing EEG benchmark
 

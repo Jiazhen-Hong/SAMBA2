@@ -4,17 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import importlib.metadata
 import json
 import math
 import os
 import statistics
-import sys
-import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable
 
 
 def _early_gpu() -> None:
@@ -31,8 +29,8 @@ from torch.nn import functional as F
 
 
 ALL_MODELS = [
-    "mamba1", "mamba2", "mamba3", "transformer", "linear_transformer",
-    "flash1", "flash2", "flash3", "flash4",
+    "mamba1", "mamba2", "mamba3", "transformer_math", "pytorch_sdpa",
+    "linear_transformer", "flash4",
 ]
 
 
@@ -40,6 +38,8 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--gpu", default="1", help="Physical GPU index before CUDA remapping")
     p.add_argument("--models", nargs="+", choices=ALL_MODELS, default=ALL_MODELS)
+    p.add_argument("--protocol", choices=["width", "params", "both"], default="both",
+                   help="Matched width, matched parameter count, or both")
     p.add_argument("--lengths", nargs="+", type=int,
                    default=[256, 512, 1024, 2048, 4096, 8192, 16384])
     p.add_argument("--batch-size", type=int, default=1)
@@ -62,6 +62,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output", type=Path, default=Path("Results/sequence_efficiency"))
     p.add_argument("--list-backends", action="store_true")
     p.add_argument("--seed", type=int, default=7)
+    p.add_argument("--parameter-tolerance", type=float, default=0.03,
+                   help="Warn when the closest parameter match exceeds this relative error")
     a = p.parse_args()
     if a.d_model % a.heads:
         p.error("--d-model must be divisible by --heads")
@@ -77,28 +79,16 @@ def package_version(name: str) -> str | None:
         return None
 
 
-def flash_status() -> dict[str, str]:
-    version = package_version("flash-attn")
-    out = {"flash1": "requires a separate flash-attn 1.x environment",
-           "flash2": "flash-attn 2.x not installed",
-           "flash3": "flash_attn_3 not importable",
+def backend_status() -> dict[str, str]:
+    out = {"transformer_math": "available: native PyTorch operations",
+           "pytorch_sdpa": "available: torch.nn.functional.scaled_dot_product_attention",
+           "linear_transformer": "available: native PyTorch operations",
            "flash4": "flash-attn-4 / flash_attn.cute not importable"}
-    if version:
-        major = version.split(".", 1)[0]
-        if major == "1":
-            out["flash1"] = f"available: flash-attn {version}"
-        elif major == "2":
-            out["flash2"] = f"available: flash-attn {version}"
-    try:
-        from flash_attn_3 import flash_attn_interface  # noqa: F401
-        out["flash3"] = "available: flash_attn_3"
-    except Exception:
-        pass
     try:
         from flash_attn.cute import flash_attn_func  # noqa: F401
-        out["flash4"] = "available: flash_attn.cute"
-    except Exception:
-        pass
+        out["flash4"] = f"available: flash-attn-4 {package_version('flash-attn-4') or 'unknown'}"
+    except Exception as exc:
+        out["flash4"] += f" ({type(exc).__name__}: {exc})"
     return out
 
 
@@ -126,7 +116,7 @@ class AttentionCore(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         q, k, v = self._qkv(x)
-        if self.backend == "transformer":
+        if self.backend == "transformer_math":
             # Deliberately materialize the causal attention matrix. This is the
             # plain mathematical baseline and cannot silently select a Flash kernel.
             qt, kt, vt = (z.transpose(1, 2) for z in (q, k, v))
@@ -134,6 +124,11 @@ class AttentionCore(nn.Module):
             causal = torch.ones(x.shape[1], x.shape[1], device=x.device, dtype=torch.bool).tril_()
             scores.masked_fill_(~causal, torch.finfo(scores.dtype).min)
             y = torch.matmul(scores.softmax(dim=-1), vt).transpose(1, 2)
+        elif self.backend == "pytorch_sdpa":
+            qt, kt, vt = (z.transpose(1, 2) for z in (q, k, v))
+            y = F.scaled_dot_product_attention(
+                qt, kt, vt, dropout_p=0.0, is_causal=True
+            ).transpose(1, 2)
         elif self.backend == "linear_transformer":
             # Causal linear attention with phi(x)=elu(x)+1. Prefix sums keep O(L) complexity.
             qp, kp = F.elu(q) + 1, F.elu(k) + 1
@@ -141,21 +136,9 @@ class AttentionCore(nn.Module):
             ks = kp.cumsum(dim=1)
             y = torch.einsum("blhd,blhde->blhe", qp, kv)
             y = y / (torch.einsum("blhd,blhd->blh", qp, ks)[..., None] + 1e-6)
-        elif self.backend == "flash2":
-            from flash_attn import flash_attn_func
-            y = flash_attn_func(q, k, v, dropout_p=0.0, causal=True)
-        elif self.backend == "flash3":
-            from flash_attn_3 import flash_attn_interface
-            y = flash_attn_interface.flash_attn_func(q, k, v, causal=True)
         elif self.backend == "flash4":
             from flash_attn.cute import flash_attn_func
             y = flash_attn_func(q, k, v, causal=True)
-        elif self.backend == "flash1":
-            from flash_attn.flash_attn_interface import flash_attn_unpadded_qkvpacked_func
-            b, l, h, d = q.shape
-            packed = torch.stack((q, k, v), dim=2).reshape(b * l, 3, h, d)
-            cu = torch.arange(0, (b + 1) * l, l, device=x.device, dtype=torch.int32)
-            y = flash_attn_unpadded_qkvpacked_func(packed, cu, l, 0.0, causal=True).view(b, l, h, d)
         else:
             raise ValueError(self.backend)
         if isinstance(y, tuple):
@@ -208,10 +191,13 @@ def build_model(name: str, args: argparse.Namespace, dtype: torch.dtype) -> nn.M
 
 @dataclass
 class Result:
+    protocol: str
     model: str
     length: int
     status: str
+    d_model: int | None = None
     parameters: int | None = None
+    parameter_error_percent: float | None = None
     inference_median_ms: float | None = None
     inference_p95_ms: float | None = None
     tokens_per_second: float | None = None
@@ -276,9 +262,37 @@ def estimate_flops(name: str, a: argparse.Namespace, length: int) -> float:
 
 
 def unsupported_reason(name: str, statuses: dict[str, str]) -> str | None:
-    if name.startswith("flash") and not statuses[name].startswith("available"):
+    if name == "flash4" and not statuses[name].startswith("available"):
         return statuses[name]
     return None
+
+
+def parameter_count(name: str, args: argparse.Namespace, dtype: torch.dtype) -> int:
+    model = build_model(name, args, dtype)
+    count = sum(p.numel() for p in model.parameters())
+    del model
+    torch.cuda.empty_cache()
+    return count
+
+
+def matched_model_args(
+    name: str, args: argparse.Namespace, dtype: torch.dtype, target: int
+) -> tuple[argparse.Namespace, int, float]:
+    """Search legal widths and return the closest parameter count."""
+    best: tuple[float, argparse.Namespace, int] | None = None
+    for width in range(64, max(1024, args.d_model * 3) + 1, 32):
+        candidate = copy.copy(args)
+        candidate.d_model = width
+        try:
+            count = parameter_count(name, candidate, dtype)
+        except Exception:
+            continue
+        error = abs(count - target) / target
+        if best is None or error < best[0]:
+            best = (error, candidate, count)
+    if best is None:
+        raise RuntimeError(f"No legal parameter-matched width found for {name}")
+    return best[1], best[2], 100 * best[0]
 
 
 def write_results(rows: list[Result], out: Path, metadata: dict) -> None:
@@ -298,9 +312,13 @@ def write_results(rows: list[Result], out: Path, metadata: dict) -> None:
                ("forward_gflops", "Estimated forward GFLOPs")]
     fig, axes = plt.subplots(2, 3, figsize=(18, 10)); axes = axes.flat
     for ax, (field, title) in zip(axes, metrics):
-        for name in metadata["args"]["models"]:
-            rs = [r for r in rows if r.model == name and getattr(r, field) is not None]
-            if rs: ax.plot([r.length for r in rs], [getattr(r, field) for r in rs], marker="o", label=name)
+        for protocol in metadata["protocols"]:
+            for name in metadata["args"]["models"]:
+                rs = [r for r in rows if r.protocol == protocol and r.model == name
+                      and getattr(r, field) is not None]
+                if rs:
+                    label = f"{name} [{protocol}]" if len(metadata["protocols"]) > 1 else name
+                    ax.plot([r.length for r in rs], [getattr(r, field) for r in rs], marker="o", label=label)
         ax.set_xscale("log", base=2); ax.set_title(title); ax.set_xlabel("Sequence length"); ax.grid(alpha=.3)
     axes[5].axis("off"); handles, labels = axes[0].get_legend_handles_labels()
     axes[5].legend(handles, labels, loc="center")
@@ -309,7 +327,7 @@ def write_results(rows: list[Result], out: Path, metadata: dict) -> None:
 
 
 def main() -> None:
-    a = parse_args(); statuses = flash_status()
+    a = parse_args(); statuses = backend_status()
     if a.list_backends:
         print(json.dumps(statuses, indent=2)); return
     if not torch.cuda.is_available():
@@ -317,40 +335,67 @@ def main() -> None:
     torch.manual_seed(a.seed); torch.cuda.manual_seed_all(a.seed)
     dtype = getattr(torch, a.dtype)
     rows: list[Result] = []
-    for name in a.models:
+    protocols = ["width", "params"] if a.protocol == "both" else [a.protocol]
+    target_args = copy.copy(a)
+    target_parameters = parameter_count("transformer_math", target_args, dtype)
+    configurations: dict[str, dict[str, dict[str, float | int]]] = {}
+    for protocol in protocols:
+      configurations[protocol] = {}
+      for name in a.models:
         reason = unsupported_reason(name, statuses)
         if reason:
-            for length in a.lengths: rows.append(Result(name, length, "UNSUPPORTED", error=reason))
-            print(f"{name}: UNSUPPORTED ({reason})"); continue
+            for length in a.lengths:
+                rows.append(Result(protocol, name, length, "UNSUPPORTED", error=reason))
+            print(f"{protocol:6s} {name}: UNSUPPORTED ({reason})"); continue
+        model_args = copy.copy(a)
+        if protocol == "params":
+            model_args, params, param_error = matched_model_args(name, a, dtype, target_parameters)
+        else:
+            params = parameter_count(name, model_args, dtype)
+            param_error = 100 * abs(params - target_parameters) / target_parameters
+        configurations[protocol][name] = {
+            "d_model": model_args.d_model, "parameters": params,
+            "parameter_error_percent": param_error,
+        }
+        if protocol == "params" and param_error / 100 > a.parameter_tolerance:
+            print(f"WARNING: {name} closest parameter error is {param_error:.2f}%")
         stop = False
         for length in a.lengths:
             if stop:
-                rows.append(Result(name, length, "SAFETY_LIMIT", error="previous peak exceeded memory limit")); continue
+                rows.append(Result(protocol, name, length, "SAFETY_LIMIT",
+                                   d_model=model_args.d_model, parameters=params,
+                                   parameter_error_percent=param_error,
+                                   error="previous peak exceeded memory limit")); continue
             model = x = None
             try:
-                model = build_model(name, a, dtype)
-                params = sum(p.numel() for p in model.parameters())
-                x = torch.randn(a.batch_size, length, a.d_model, device="cuda", dtype=dtype)
+                model = build_model(name, model_args, dtype)
+                x = torch.randn(a.batch_size, length, model_args.d_model, device="cuda", dtype=dtype)
                 med, p95, mem = timed_forward(model, x, a.warmup, a.repeats)
                 train_ms = train_mem = None
-                if not a.skip_training:
-                    train_ms, train_mem = timed_training(model, x, a.train_repeats)
-                gf = estimate_flops(name, a, length)
-                row = Result(name, length, "OK", params, med, p95,
+                if not model_args.skip_training:
+                    train_ms, train_mem = timed_training(model, x, model_args.train_repeats)
+                gf = estimate_flops(name, model_args, length)
+                row = Result(protocol, name, length, "OK", model_args.d_model,
+                             params, param_error, med, p95,
                              a.batch_size*length/(med/1000), mem, train_ms, train_mem,
                              gf, gf/(med/1000)/1000)
-                rows.append(row); print(f"{name:18s} L={length:7d} {med:8.3f} ms {mem:7.2f} GiB")
+                rows.append(row); print(f"{protocol:6s} {name:18s} d={model_args.d_model:4d} "
+                                        f"L={length:7d} {med:8.3f} ms {mem:7.2f} GiB")
                 stop = max(mem, train_mem or 0) >= a.memory_limit_gib
             except torch.cuda.OutOfMemoryError as exc:
-                rows.append(Result(name, length, "OOM", error=str(exc).splitlines()[0])); stop = True
-                print(f"{name:18s} L={length:7d} OOM")
+                rows.append(Result(protocol, name, length, "OOM", model_args.d_model,
+                                   params, param_error, error=str(exc).splitlines()[0])); stop = True
+                print(f"{protocol:6s} {name:18s} L={length:7d} OOM")
             except Exception as exc:
-                rows.append(Result(name, length, "ERROR", error=f"{type(exc).__name__}: {exc}")); stop = True
-                print(f"{name:18s} L={length:7d} ERROR: {exc}")
+                rows.append(Result(protocol, name, length, "ERROR", model_args.d_model,
+                                   params, param_error, error=f"{type(exc).__name__}: {exc}")); stop = True
+                print(f"{protocol:6s} {name:18s} L={length:7d} ERROR: {exc}")
             finally:
                 del model, x
                 torch.cuda.empty_cache()
-    metadata = {"args": vars(a) | {"output": str(a.output)}, "flash_backends": statuses,
+    metadata = {"args": vars(a) | {"output": str(a.output)}, "backend_status": statuses,
+                "protocols": protocols, "parameter_target": target_parameters,
+                "model_configurations": configurations,
                 "torch": torch.__version__, "cuda": torch.version.cuda,
                 "gpu": torch.cuda.get_device_name(0), "mamba_ssm": package_version("mamba-ssm"),
                 "flop_definition": "analytical forward FLOPs; multiply-add=2; Mamba scan is an explicit proxy"}
