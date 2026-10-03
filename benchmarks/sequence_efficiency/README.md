@@ -60,3 +60,16 @@ python benchmarks/sequence_efficiency/benchmark.py \
 ```
 
 See the complete command list at the end of the repository root `README.md`.
+
+## Merge isolated-environment results
+
+Run the Mamba/Transformer group and FA4 group with identical benchmark settings but different output directories. Then merge them from either environment:
+
+```bash
+python benchmarks/sequence_efficiency/merge_results.py \
+  Results/sequence_efficiency_mamba \
+  Results/sequence_efficiency_fa4 \
+  --output Results/sequence_efficiency_combined
+```
+
+The script refuses to merge runs with different lengths, batch size, layers, heads, dtype, or architecture settings. It writes `results_combined.csv`, `metadata_combined.json`, and `efficiency_summary_combined.png`.

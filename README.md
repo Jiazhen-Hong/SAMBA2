@@ -182,3 +182,16 @@ python notebook/benchmark_mamba_eeg.py --gpu 1 --models mamba1 mamba2 mamba3 tra
 ```
 
 Its options and output files are documented in [`notebook/README.md`](notebook/README.md).
+
+### Merge Mamba and FlashAttention 4 runs
+
+Mamba-3 and FlashAttention 4 require incompatible TVM-FFI versions, so run them in separate Conda environments with identical benchmark arguments. Merge and plot their results afterward:
+
+```bash
+python benchmarks/sequence_efficiency/merge_results.py \
+  Results/sequence_efficiency_mamba \
+  Results/sequence_efficiency_fa4 \
+  --output Results/sequence_efficiency_combined
+```
+
+The merge command checks that the experimental settings match before placing all methods in the same CSV and figure.
