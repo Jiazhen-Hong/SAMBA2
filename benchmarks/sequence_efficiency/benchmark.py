@@ -299,28 +299,14 @@ def write_results(rows: list[Result], out: Path, metadata: dict) -> None:
         w.writerows(asdict(r) for r in rows)
     (out / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     try:
-        import matplotlib.pyplot as plt
+        from plot_results import plot_rows
+        row_dicts = [asdict(row) for row in rows]
+        plot_rows(row_dicts, out, sampling_rate=128.0,
+                  prefix="efficiency_summary", log_y=False)
+        plot_rows(row_dicts, out, sampling_rate=128.0,
+                  prefix="efficiency_summary", log_y=True)
     except ImportError:
         return
-    metrics = [("inference_median_ms", "Inference latency (ms)"),
-               ("tokens_per_second", "Throughput (tokens/s)"),
-               ("inference_peak_gib", "Inference peak memory (GiB)"),
-               ("training_peak_gib", "Training peak memory (GiB)"),
-               ("forward_gflops", "Estimated forward GFLOPs")]
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10)); axes = axes.flat
-    for ax, (field, title) in zip(axes, metrics):
-        for protocol in metadata["protocols"]:
-            for name in metadata["args"]["models"]:
-                rs = [r for r in rows if r.protocol == protocol and r.model == name
-                      and getattr(r, field) is not None]
-                if rs:
-                    label = f"{name} [{protocol}]" if len(metadata["protocols"]) > 1 else name
-                    ax.plot([r.length for r in rs], [getattr(r, field) for r in rs], marker="o", label=label)
-        ax.set_xscale("log", base=2); ax.set_title(title); ax.set_xlabel("Sequence length"); ax.grid(alpha=.3)
-    axes[5].axis("off"); handles, labels = axes[0].get_legend_handles_labels()
-    axes[5].legend(handles, labels, loc="center")
-    fig.suptitle("Standalone sequence block efficiency benchmark"); fig.tight_layout()
-    fig.savefig(out / "efficiency_summary.png", dpi=180); plt.close(fig)
 
 
 def main() -> None:

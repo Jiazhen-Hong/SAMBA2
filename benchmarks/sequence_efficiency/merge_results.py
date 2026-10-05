@@ -8,6 +8,8 @@ import csv
 import json
 from pathlib import Path
 
+from plot_results import plot_rows
+
 
 NUMERIC_FIELDS = {
     "length": int,
@@ -187,8 +189,10 @@ def main() -> None:
     (args.output / "metadata_combined.json").write_text(
         json.dumps(combined_metadata, indent=2) + "\n"
     )
-    write_plot(all_rows, args.output)
-    write_plot(all_rows, args.output, log_y=True)
+    plot_rows(all_rows, args.output, sampling_rate=128.0,
+              prefix="efficiency_summary_combined", log_y=False)
+    plot_rows(all_rows, args.output, sampling_rate=128.0,
+              prefix="efficiency_summary_combined", log_y=True)
     print(f"Merged {len(all_rows)} rows into {args.output}")
 
 

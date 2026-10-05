@@ -72,4 +72,15 @@ python benchmarks/sequence_efficiency/merge_results.py \
   --output Results/sequence_efficiency_combined
 ```
 
-The script refuses to merge runs with different lengths, batch size, layers, heads, dtype, or architecture settings. It writes `results_combined.csv`, `metadata_combined.json`, a linear-scale figure, and `efficiency_summary_combined_log.png`. Curves use distinct colors, markers, and line styles. A tiny display-only horizontal offset reveals values that overlap exactly; the CSV values are unchanged.
+The script refuses to merge runs with different lengths, batch size, layers, heads, dtype, or architecture settings. It writes `results_combined.csv`, `metadata_combined.json`, `efficiency_summary_combined_linear.png`, and `efficiency_summary_combined_log.png`.
+
+To redraw an existing CSV without rerunning any GPU experiment:
+
+```bash
+python benchmarks/sequence_efficiency/plot_results.py \
+  Results/sequence_efficiency_params_combined/results_combined.csv \
+  --sampling-rate 128 \
+  --output Results/sequence_efficiency_params_128hz
+```
+
+The updated layout places inference/training latency in the left column, memory in the middle column, and throughput/FLOPs in the right column. The x-axis reports EEG duration in seconds at the selected sampling rate. Related methods use coordinated color families, text and axes are bold, OOM events are marked, and small plotting-only offsets expose overlapping curves without changing CSV values.

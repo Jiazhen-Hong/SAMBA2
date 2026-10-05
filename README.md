@@ -243,11 +243,22 @@ Each raw run contains `results.csv`, `metadata.json`, and its own figure. Each c
 ```text
 results_combined.csv
 metadata_combined.json
-efficiency_summary_combined.png
+efficiency_summary_combined_linear.png
 efficiency_summary_combined_log.png
 ```
 
-The log-scale figure is usually easier to read. The plotting-only horizontal offsets expose overlapping curves and do not modify stored sequence lengths.
+The log-scale figure is usually easier to read. Figures use EEG duration in seconds at 128 Hz. The plotting-only horizontal offsets expose overlapping curves and do not modify stored sequence lengths. OOM events are marked directly on each panel.
+
+Redraw either existing combined CSV into a new folder without using the GPU:
+
+```bash
+python benchmarks/sequence_efficiency/plot_results.py \
+  Results/sequence_efficiency_params_combined/results_combined.csv \
+  --sampling-rate 128 \
+  --output Results/sequence_efficiency_params_128hz
+```
+
+For the width-matched result, replace `params` with `width` in both paths. This command generates `efficiency_128hz_linear.png` and `efficiency_128hz_log.png`.
 
 ### 6. Older EEG-oriented benchmark
 
