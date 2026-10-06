@@ -260,12 +260,4 @@ python benchmarks/sequence_efficiency/plot_results.py \
 
 For the width-matched result, replace `params` with `width` in both paths. This command generates `efficiency_128hz_linear.png` and `efficiency_128hz_log.png`.
 
-### 6. Older EEG-oriented benchmark
-
-```bash
-conda activate mamba
-python notebook/benchmark_mamba_eeg.py \
-  --gpu 1 --models mamba1 mamba2 mamba3 transformer linear_transformer
-```
-
-See [`benchmarks/sequence_efficiency/README.md`](benchmarks/sequence_efficiency/README.md) for metric definitions and [`notebook/README.md`](notebook/README.md) for the older benchmark.
+See [`benchmarks/sequence_efficiency/README.md`](benchmarks/sequence_efficiency/README.md) for metric definitions and complete Axon commands.
