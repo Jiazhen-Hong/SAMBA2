@@ -1,5 +1,5 @@
 # SAMBA: Toward an EEG Foundation Model via Differential Mamba and Coordinate-Driven Spatial Embedding
-**Update: Jan. 2026**
+**Update: Nov. 2026**
 
 **SAMBA** is a scalable self-supervised framework for long-sequence EEG foundation modeling. It integrates 3D coordinate-driven spatial embedding and differential Mamba modules to enable robust, efficient, and generalizable EEG representation learning across diverse recording configurations and cognitive tasks.
 
@@ -81,25 +81,70 @@ The figure below illustrates the **Coordinate-Driven Spatial Embedding (CDSE)** 
 
 ## Model and Checkpoints
 
-- The full architecture is implemented under `Models/`.
-- Two pretrained checkpoints are provided under `Checkpoints/`:
-  - `SAMBA-E`: trained using PyTorch Lightning
-  - `SAMBA-T`: trained using native PyTorch
-- The accompanying paper is currently in preparation. More features and documentation will be released soon.
+- The paper-aligned, reusable implementation is under `src/samba_eeg/`.
+- `SAMBA-E` and `SAMBA-T` training recipes are under `configs/`.
+- Pretrained weights are **not yet included**. A release is called pretrained only after its data manifest, validation record, and model weights have been published together.
+- The research prototype under `Models/` remains temporarily available for experiment compatibility.
+
+### Public model API
+
+```python
+import torch
+from samba_eeg import SambaModel
+
+model = SambaModel.from_pretrained("path/to/SAMBA-E")
+output = model(
+    signals=torch.randn(2, 14, 256),
+    input_positions=torch.randn(14, 3),
+)
+
+# Encoder representation used by the paper's linear probing protocol: [B, T/8, 128]
+features = output.last_hidden_state
+```
+
+`input_positions` may be `[C, 3]` for a shared montage or `[B, C, 3]` for a batch with per-recording coordinates. `channel_mask` supports padded or missing electrodes. This removes the prototype's fixed channel-order assumption.
+
+The checkpoint directory follows the common Hugging Face layout:
+
+```text
+SAMBA-E/
+├── config.json
+├── model.safetensors        # preferred
+├── README.md                # model card
+└── training_metadata.json   # data manifest hash, code revision, and metrics
+```
+
+The optional `SambaNeuralBenchBackbone` adapter returns a plain `[B, T, D]` tensor and accepts runtime channel coordinates. No architecture change is required for sequence lengths divisible by eight, including the paper's 256 and 12,800 sample settings.
+
+```python
+from neuralbench import evaluate_model
+from samba_eeg.integrations import SambaNeuralBenchBackbone
+
+scores = evaluate_model(
+    SambaNeuralBenchBackbone(model),
+    "eeg",
+    "all",
+    name="samba-e",
+    downstream_wrapper="linear_probe_mean",
+    debug=True,
+)
+```
+
+NeuralBench runs the model itself; uploading a checkpoint alone does not produce a score. Its bring-your-own-model route expects one model instance to accept arbitrary channel counts and window lengths, and passes `channel_positions` into `forward`. SAMBA's adapter follows that interface. See the [official NeuralBench guide](https://facebookresearch.github.io/neuroai/neuralbench/auto_examples/quickstart/03_evaluate_your_own_model.html).
 
 ---
 
 ## Repository Structure
 ```plaintext
 SAMBA/
-├── Env-requirement/     # Environment configs with dated backups
-├── Checkpoints/         # Pretrained SAMBA models (SAMBA-E, SAMBA-T)
-├── Models/              # Model architecture implementations
-├── Experiments/         # PyTorch Lightning training modules
-├── utility/             # Supporting functions: data loading, masking, loss, evaluation
+├── src/samba_eeg/       # Stable package API
+├── configs/             # SAMBA-E and SAMBA-T recipes
+├── tests/               # CPU compatibility tests
+├── Models/              # Legacy research prototype
+├── utility/             # Legacy experiment utilities
 ├── Figures/             # Diagrams and visualizations
-├── Montage/             # EEG montage metadata for multiple devices
-└── README.md            # Project overview
+├── Montage/             # EEG montage metadata
+└── README.md
 ```
 
 ## Axon experiment command reference
