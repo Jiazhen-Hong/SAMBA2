@@ -305,8 +305,8 @@ def main() -> None:
         start_epoch = int(checkpoint["epoch"]) + 1
         best_validation = float(checkpoint["best_validation"])
         source_rng.setstate(checkpoint["source_rng_state"])
-        torch.set_rng_state(checkpoint["torch_rng_state"])
-        torch.cuda.set_rng_state_all(checkpoint["cuda_rng_state"])
+        torch.set_rng_state(checkpoint["torch_rng_state"].cpu())
+        torch.cuda.set_rng_state_all([state.cpu() for state in checkpoint["cuda_rng_state"]])
 
     train_loaders = make_loaders(
         args.emotiv_root,
