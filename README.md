@@ -162,7 +162,7 @@ CUDA_VISIBLE_DEVICES=0 python scripts/train_samba.py \
   --config configs/samba.yaml \
   --emotiv-root /data/SAMBA-tmp/Emotiv \
   --tuab-root /data/data_downstream_task/TUAB/TUAB_16ch_10s \
-  --output-root /data/SAMBA-tmp/checkpoints/SAMBA/smoke-test \
+  --output-root checkpoints/SAMBA/smoke-test \
   --micro-batch-size 32 \
   --smoke-test
 ```
@@ -174,10 +174,10 @@ CUDA_VISIBLE_DEVICES=0 python scripts/train_samba.py \
   --config configs/samba.yaml \
   --emotiv-root /data/SAMBA-tmp/Emotiv \
   --tuab-root /data/data_downstream_task/TUAB/TUAB_16ch_10s \
-  --output-root /data/SAMBA-tmp/checkpoints/SAMBA/run-001
+  --output-root checkpoints/SAMBA/run-001
 ```
 
-The default physical batch is 256 with four-step gradient accumulation, giving an effective batch of 1,024. Source selection is 50% TUAB and 50% across the five Emotiv datasets. Training checkpoints remain on `/data` because the Axon home filesystem has limited free space.
+The default physical batch is 256 with four-step gradient accumulation, giving an effective batch of 1,024. Source selection is 50% TUAB and 50% across the five Emotiv datasets. Temporary prepared data remain under `/data/SAMBA-tmp`, while checkpoints are written under the user's repository directory. `last.pt` is updated every epoch, and periodic snapshots are retained every 50 epochs to limit storage use.
 
 The default loader uses two persistent workers for each of six sources, for 12 workers total, with pinned memory and four-batch prefetching. Temporal Semantic Random Masking is vectorized on the GPU. Normalization and resampling are never performed inside the training loop.
 

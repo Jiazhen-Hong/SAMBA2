@@ -70,7 +70,7 @@ training:
   warmup_fraction: 0.1
   weight_decay: 0.01
   validation_batches_per_source: 8
-  save_every: 10
+  save_every: 50
   precision: bf16
 
 evaluation:

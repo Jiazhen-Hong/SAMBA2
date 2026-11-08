@@ -3,6 +3,7 @@ Results/
 Checkpoints/
 !checkpoints/
 !checkpoints/README.md
+checkpoints/SAMBA/
 artifacts/
 *.safetensors
 *.pth
