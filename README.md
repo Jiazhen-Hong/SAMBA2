@@ -181,6 +181,8 @@ The default physical batch is 256 with four-step gradient accumulation, giving a
 
 The default loader uses two persistent workers for each of six sources, for 12 workers total, with pinned memory and four-batch prefetching. Temporal Semantic Random Masking is vectorized on the GPU. Normalization and resampling are never performed inside the training loop.
 
+On shared systems with limited `/dev/shm`, pass `--workers-per-source 0`. The dataset implements vectorized batch reads, so this mode avoids multiprocessing shared memory without returning to slow per-sample disk access.
+
 ---
 
 ## Repository Structure

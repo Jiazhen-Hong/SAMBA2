@@ -45,3 +45,20 @@ class NpyWindowDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         else:
             mask = np.array(self._mask[index], dtype=np.bool_, copy=True)
         return torch.from_numpy(signal), torch.from_numpy(mask)
+
+    def __getitems__(self, indices: list[int]) -> list[tuple[torch.Tensor, torch.Tensor]]:
+        """Fetch a complete DataLoader batch with one memory-map operation.
+
+        PyTorch uses this method when automatic batching is enabled. It keeps the
+        zero-worker path efficient and avoids multiprocessing shared-memory use.
+        """
+        self._open()
+        signals = np.array(self._signals[indices], dtype=np.float32, copy=True)
+        if self._mask is None:
+            masks = np.ones((len(indices), self.shape[1]), dtype=np.bool_)
+        else:
+            masks = np.array(self._mask[indices], dtype=np.bool_, copy=True)
+        return [
+            (torch.from_numpy(signals[index]), torch.from_numpy(masks[index]))
+            for index in range(len(indices))
+        ]
