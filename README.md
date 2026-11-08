@@ -81,11 +81,21 @@ The figure below illustrates the **Coordinate-Driven Spatial Embedding (CDSE)** 
 
 ## Model and Checkpoints
 
-- The paper-aligned, reusable implementation is under `src/samba_eeg/`.
-- Paper-locked `SAMBA-E` and `SAMBA-T` recipes are under `reproduction/`.
-- Experimental multi-duration work is isolated under `SAMBA-opt/` and is not a paper checkpoint.
-- Pretrained weights are **not yet included**. A release is called pretrained only after its data manifest, validation record, and model weights have been published together.
-- The research prototype under `Models/` remains temporarily available for experiment compatibility.
+### Checkpoint history
+
+The original SAMBA-E and SAMBA-T checkpoints were produced during a 2025 internship. After the internship ended, the personal company account used for this work was removed, and the checkpoint files were not retained. The internal data pipeline was later reorganized. Some recovered arrays still match the reported shapes and sample counts, but the original filtering, normalization, and window construction cannot be fully verified. Therefore, this repository no longer claims that a newly trained checkpoint is a strict reproduction of the original SAMBA-E or SAMBA-T weights.
+
+The paper results remain the record for the original experiments. New weights must not be used as direct replacements for reproducing the paper tables.
+
+### Current release direction
+
+The repository now targets one checkpoint named **SAMBA**. The rebuilt pipeline is designed for joint training with verified Emotiv and TUAB sources, source-homogeneous microbatches, a shared coordinate-driven reconstruction space, and explicit preprocessing metadata. It also improves support for variable channel layouts and temporal lengths in downstream use.
+
+The recovered TUAB array currently has 256 samples per window. Its directory name contains `10s`, but the surviving files do not provide enough metadata to verify a 10-second duration. The configuration records this duration as unknown rather than inferring it from the directory name.
+
+The new checkpoint will be released only after the rebuilt data manifest, preprocessing record, validation result, code revision, and model weights are available together. Until then, pretrained weights are **not yet included**.
+
+The reusable implementation is under `src/samba_eeg/`. The research prototype under `Models/` remains temporarily available for comparison with the 2025 code.
 
 ### Public model API
 
@@ -93,7 +103,7 @@ The figure below illustrates the **Coordinate-Driven Spatial Embedding (CDSE)** 
 import torch
 from samba_eeg import SambaModel
 
-model = SambaModel.from_pretrained("path/to/SAMBA-E")
+model = SambaModel.from_pretrained("path/to/SAMBA")
 output = model(
     signals=torch.randn(2, 14, 256),
     input_positions=torch.randn(14, 3),
@@ -108,14 +118,14 @@ features = output.last_hidden_state
 The checkpoint directory follows the common Hugging Face layout:
 
 ```text
-SAMBA-E/
+SAMBA/
 ├── config.json
 ├── model.safetensors        # preferred
 ├── README.md                # model card
 └── training_metadata.json   # data manifest hash, code revision, and metrics
 ```
 
-The optional `SambaNeuralBenchBackbone` adapter returns a plain `[B, T, D]` tensor and accepts runtime channel coordinates. No architecture change is required for sequence lengths divisible by eight, including the paper's 256 and 12,800 sample settings.
+The optional `SambaNeuralBenchBackbone` adapter returns a plain `[B, T, D]` tensor and accepts runtime channel coordinates. The encoder accepts different channel counts and temporal lengths without changing checkpoint parameters.
 
 ```python
 from neuralbench import evaluate_model
@@ -125,7 +135,7 @@ scores = evaluate_model(
     SambaNeuralBenchBackbone(model),
     "eeg",
     "all",
-    name="samba-e",
+    name="samba",
     downstream_wrapper="linear_probe_mean",
     debug=True,
 )
@@ -139,10 +149,9 @@ NeuralBench runs the model itself; uploading a checkpoint alone does not produce
 ```plaintext
 SAMBA/
 ├── src/samba_eeg/       # Stable package API
-├── reproduction/        # Paper-locked SAMBA-E and SAMBA-T
-├── SAMBA-opt/           # Experimental compatibility track
-├── checkpoints/         # Release layout documentation
-├── scripts/             # Data preparation and export tools
+├── configs/samba.yaml   # Current single-checkpoint configuration
+├── checkpoints/         # SAMBA release layout documentation
+├── scripts/             # Configuration and evaluation tools
 ├── tests/               # CPU compatibility tests
 ├── Models/              # Legacy research prototype
 ├── utility/             # Legacy experiment utilities

@@ -25,7 +25,7 @@ def main() -> None:
     model.update(
         target_channel_names=montage["Channel"].astype(str).tolist(),
         target_positions=montage[["X", "Y", "Z"]].astype(float).values.tolist(),
-        reconstruction_channels=int(recipe["input_channels"]),
+        reconstruction_channels=int(recipe.get("reconstruction_channels", len(montage))),
         sampling_rate=float(recipe["sampling_rate"]),
         checkpoint_variant=recipe["variant"],
     )

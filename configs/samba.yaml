@@ -1,0 +1,46 @@
+variant: SAMBA
+status: pipeline_rebuild
+paper_reproduction: false
+sampling_rate: 128
+target_montage: Montage/standard_1020_positions.xlsx
+reconstruction_space: common_cdse_target
+
+data:
+  batching: source_homogeneous_microbatches
+  sources:
+    - name: Emotiv
+      channels: 14
+      window_samples: 256
+      preprocessing: pending_verification
+    - name: TUAB
+      channels: 16
+      window_samples: 256
+      source_directory_name: TUAB_16ch_10s
+      duration_seconds: null
+      preprocessing: pending_verification
+      note: The recovered array shape does not verify the duration implied by the directory name.
+
+model:
+  base_channels: 64
+  bottleneck_channels: 128
+  d_state: 16
+  d_conv: 2
+  expand: 8
+  head_dim: 16
+  cdse_hidden_dim: 32
+  mixer_backend: mamba2
+
+objective:
+  masking: temporal_semantic_random
+  mask_ratio: 0.5
+  time_loss: l1
+  frequency_loss: fixed_window_stft
+
+training:
+  seed: 3407
+  sampler: source_and_duration_bucketed
+  gradient_accumulation: true
+
+evaluation:
+  neuralbench: true
+  wrapper: linear_probe_mean

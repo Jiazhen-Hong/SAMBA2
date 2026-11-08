@@ -1,41 +1,40 @@
-# SAMBA-E and SAMBA-T training and release contract
+# SAMBA training and release contract
 
-This document prevents a checkpoint from becoming detached from its data and code history.
+This repository publishes one current checkpoint named `SAMBA`.
 
-The repository has two independent tracks. `reproduction/` defines SAMBA-E and SAMBA-T exactly as reported in the paper. `SAMBA-opt/` contains later experimental changes and must use a different checkpoint name.
+## Historical checkpoint status
 
-## Paper-aligned definitions
+SAMBA-E and SAMBA-T were trained during a 2025 internship. Their checkpoint files were lost when the associated personal company account was removed after the internship. The internal preprocessing directories were later reorganized. The surviving data do not fully establish the original filtering, normalization, window boundaries, and sampling metadata.
 
-SAMBA-E uses 14-channel, 128 Hz, two-second Emotiv windows. SAMBA-T uses 16-channel, 128 Hz, 100-second TUAB windows. Both recipes use 50% Temporal Semantic Random masking, 200 epochs, AdamW with weight decay 0.01, and the paper's OneCycle schedule.
+For this reason, the current checkpoint is not labeled as a strict reproduction of SAMBA-E or SAMBA-T. The original paper results remain unchanged, but new weights must be evaluated and reported separately.
 
-Do not introduce mixed-duration batches, a common reconstruction head, or a different spectral objective into these two recipes. Those changes belong to SAMBA-opt.
+## Current data contract
 
-The paper reports 311,011 samples for the six-corpus SAMBA-E pretraining set and 39,810 100-second samples for SAMBA-T. Training must stop if the resolved manifest counts do not match the intended release. Do not silently resample, discard subjects, or substitute a random sample split.
+The rebuilt pipeline may jointly train on verified Emotiv and TUAB sources. Every source must record:
 
-## Required manifest fields
+- source dataset and version;
+- subject identifier and split assignment;
+- ordered channel names and 3D coordinates;
+- sampling rate, units, reference, filtering, and normalization;
+- window length, stride, and recording boundaries;
+- preprocessing code revision and manifest hash.
 
-Every data source must record:
+A directory name is not accepted as duration metadata. In particular, the recovered `TUAB_16ch_10s` arrays have 256 samples per window, but the surviving files do not yet verify that these samples represent 10 seconds.
 
-- stable sample or shard path;
-- subject identifier and train, validation, or test assignment;
-- ordered channel names and three-dimensional coordinates;
-- sampling rate, window length, stride, filtering, referencing, and normalization;
-- source dataset version and preprocessing code revision.
-
-The split must be subject-wise unless a named benchmark protocol requires otherwise. The manifest content hash is stored in `training_metadata.json`.
+Sources with different montages or lengths use homogeneous microbatches. They are mapped to a shared coordinate-driven reconstruction space before the reconstruction objective is evaluated. Downstream encoding remains channel and length flexible.
 
 ## Required release artifacts
 
-A public checkpoint directory must contain:
+The released `SAMBA` directory must contain:
 
-- `config.json`, including target positions and reconstruction channel count;
-- `model.safetensors` or `pytorch_model.bin`;
-- `training_metadata.json`, including the Git revision, manifest hash, seed, optimizer, scheduler, epoch, and validation metric;
-- a model card describing intended use, preprocessing, input units, limitations, and benchmark results.
+- `config.json`;
+- `model.safetensors`;
+- `training_metadata.json` with the Git revision, manifest hash, seed, optimizer, scheduler, epoch, and validation metric;
+- `README.md` describing preprocessing, input units, intended use, limitations, and benchmark results.
 
-The final weights must be selected using validation data only. Test data is evaluated once after model selection. Resume checkpoints must also store optimizer, scheduler, scaler, epoch, global step, and random number generator states.
+The final checkpoint is selected using validation data only. Test data is evaluated after model selection. A release is not called pretrained until all artifacts are published together.
 
-## Compatibility checks before upload
+## Compatibility checks
 
 Run:
 
@@ -43,4 +42,4 @@ Run:
 PYTHONPATH=src python -m pytest -q
 ```
 
-Then verify loading on CPU, a runtime montage with missing-channel masks, both paper sequence lengths, and the NeuralBench adapter. Upload the complete directory to Hugging Face rather than uploading a bare `.pth` file.
+Then verify CPU loading, missing-channel masks, multiple channel counts, multiple temporal lengths, Hugging Face serialization, and the NeuralBench adapter.

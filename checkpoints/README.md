@@ -1,18 +1,14 @@
-# Checkpoint releases
+# Checkpoint release
 
-Large weight files are not committed to Git. Each released checkpoint is uploaded as a complete Hugging Face-compatible directory:
+Large weight files are not committed to Git. The repository publishes one current checkpoint:
 
 ```text
 checkpoints/
-├── SAMBA-E/
-│   ├── config.json
-│   ├── model.safetensors
-│   ├── training_metadata.json
-│   └── README.md
-├── SAMBA-T/
-│   └── ...
-└── SAMBA-opt/
-    └── ...
+└── SAMBA/
+    ├── config.json
+    ├── model.safetensors
+    ├── training_metadata.json
+    └── README.md
 ```
 
-SAMBA-E and SAMBA-T must satisfy `reproduction/README.md`. SAMBA-opt must be labeled experimental and is never substituted for a paper checkpoint.
+The new `SAMBA` checkpoint will be trained with the rebuilt joint pipeline and will not be presented as a strict reproduction of the lost SAMBA-E or SAMBA-T checkpoints. See `docs/TRAINING_AND_RELEASE.md` for the data and release requirements.

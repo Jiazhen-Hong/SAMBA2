@@ -1,4 +1,4 @@
-"""Evaluate an exported SAMBA-opt checkpoint with NeuralBench."""
+"""Evaluate a released SAMBA checkpoint with NeuralBench."""
 
 from __future__ import annotations
 
@@ -11,11 +11,11 @@ from samba_eeg.integrations import SambaNeuralBenchBackbone
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("checkpoint")
     parser.add_argument("--task", default="all")
     parser.add_argument("--dataset", default=None)
-    parser.add_argument("--name", default="samba-opt")
+    parser.add_argument("--name", default="samba")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
