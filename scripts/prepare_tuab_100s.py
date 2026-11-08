@@ -22,8 +22,16 @@ def _as_channel_time(value: Any, channels: int) -> np.ndarray:
     signal = np.asarray(value)
     if signal.ndim != 2:
         raise ValueError(f"expected a 2-D EEG array, got {signal.shape}")
-    if signal.shape[0] < channels and signal.shape[1] >= channels:
+    first, second = signal.shape
+    first_looks_like_channels = channels <= first <= 256 and second > first
+    second_looks_like_channels = channels <= second <= 256 and first > second
+    if second_looks_like_channels and not first_looks_like_channels:
         signal = signal.T
+    elif not first_looks_like_channels and not second_looks_like_channels:
+        raise ValueError(
+            f"cannot infer channel axis for shape {signal.shape}; "
+            f"expected one axis in [{channels}, 256] and a longer time axis"
+        )
     if signal.shape[0] < channels:
         raise ValueError(f"recording has only {signal.shape[0]} channels")
     return np.asarray(signal[:channels], dtype=np.float32)

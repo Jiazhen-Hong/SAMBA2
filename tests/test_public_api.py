@@ -43,6 +43,14 @@ def test_nan_position_is_treated_as_missing_channel():
     assert torch.equal(output.spatial_weights[0, :, 1], torch.zeros(4))
 
 
+def test_one_checkpoint_accepts_different_channel_counts_and_lengths():
+    model = SambaModel(config())
+    first = model.encode(torch.randn(1, 3, 32), torch.randn(3, 3))
+    second = model.encode(torch.randn(1, 5, 80), torch.randn(5, 3))
+    assert first.shape == (1, 4, 16)
+    assert second.shape == (1, 10, 16)
+
+
 def test_mask_is_exact_for_short_sequences():
     signals = torch.ones(3, 2, 16)
     masked, mask = temporal_semantic_random_mask(signals, mask_ratio=0.5, num_visible_blocks=8)

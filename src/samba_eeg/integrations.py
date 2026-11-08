@@ -20,4 +20,4 @@ class SambaNeuralBenchBackbone(nn.Module):
         channel_mask: torch.Tensor | None = None,
         **_: object,
     ) -> torch.Tensor:
-        return self.model(x, channel_positions, channel_mask).last_hidden_state
+        return self.model.encode(x, channel_positions, channel_mask)

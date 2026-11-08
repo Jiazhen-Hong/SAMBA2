@@ -57,3 +57,26 @@ def test_manifest_only_does_not_duplicate_eeg(tmp_path: Path):
     assert counts["windows"] == 2
     assert not list(output.glob("*_w*.pkl"))
     assert len((output / "manifest.jsonl").read_text().splitlines()) == 2
+
+
+def test_time_channel_recordings_are_transposed(tmp_path: Path):
+    source = tmp_path / "raw" / "train"
+    output = tmp_path / "windows" / "train"
+    source.mkdir(parents=True)
+    with (source / "time_first.pkl").open("wb") as stream:
+        pickle.dump({"X": np.ones((250, 20)), "y": 1}, stream)
+
+    counts = prepare_split(
+        source,
+        output,
+        channels=16,
+        sample_rate=10,
+        duration_seconds=10,
+        stride_seconds=10,
+        resume=False,
+        manifest_only=False,
+    )
+
+    assert counts["windows"] == 2
+    with sorted(output.glob("*_w*.pkl"))[0].open("rb") as stream:
+        assert pickle.load(stream)["X"].shape == (16, 100)

@@ -126,7 +126,7 @@ class SambaModel(nn.Module):
         self.decoder1 = nn.Conv1d(base * 2, base, 3, padding=1)
         self.output_embedding = nn.Conv1d(base, config.output_channels, 1)
 
-    def forward(self, signals: torch.Tensor, input_positions: torch.Tensor, channel_mask: torch.Tensor | None = None) -> SambaOutput:
+    def _encode_all(self, signals, input_positions, channel_mask=None):
         if signals.ndim != 3 or signals.shape[-1] < 8:
             raise ValueError("signals must have shape [B, C, T] with T >= 8")
         projected, weights = self.cdse(signals, input_positions, channel_mask)
@@ -135,6 +135,19 @@ class SambaModel(nn.Module):
         x2 = self.encoder2(F.max_pool1d(x1, 2))
         x3 = self.encoder3(F.max_pool1d(x2, 2))
         hidden = self.bottleneck(F.max_pool1d(x3, 2).transpose(1, 2))
+        return x1, x2, x3, hidden, weights
+
+    def encode(
+        self,
+        signals: torch.Tensor,
+        input_positions: torch.Tensor,
+        channel_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Return the paper's post-MDM [B, T/8, D] downstream representation."""
+        return self._encode_all(signals, input_positions, channel_mask)[3]
+
+    def forward(self, signals: torch.Tensor, input_positions: torch.Tensor, channel_mask: torch.Tensor | None = None) -> SambaOutput:
+        x1, x2, x3, hidden, weights = self._encode_all(signals, input_positions, channel_mask)
         up3 = F.interpolate(hidden.transpose(1, 2), size=x3.shape[-1], mode="linear", align_corners=False)
         d3 = self.decoder3_mixer(self.decoder3(torch.cat([x3, up3], 1)).transpose(1, 2)).transpose(1, 2)
         d3 = F.interpolate(d3, size=x2.shape[-1], mode="linear", align_corners=False)
