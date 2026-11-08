@@ -82,7 +82,8 @@ The figure below illustrates the **Coordinate-Driven Spatial Embedding (CDSE)** 
 ## Model and Checkpoints
 
 - The paper-aligned, reusable implementation is under `src/samba_eeg/`.
-- `SAMBA-E` and `SAMBA-T` training recipes are under `configs/`.
+- Paper-locked `SAMBA-E` and `SAMBA-T` recipes are under `reproduction/`.
+- Experimental multi-duration work is isolated under `SAMBA-opt/` and is not a paper checkpoint.
 - Pretrained weights are **not yet included**. A release is called pretrained only after its data manifest, validation record, and model weights have been published together.
 - The research prototype under `Models/` remains temporarily available for experiment compatibility.
 
@@ -138,7 +139,10 @@ NeuralBench runs the model itself; uploading a checkpoint alone does not produce
 ```plaintext
 SAMBA/
 ├── src/samba_eeg/       # Stable package API
-├── configs/             # SAMBA-E and SAMBA-T recipes
+├── reproduction/        # Paper-locked SAMBA-E and SAMBA-T
+├── SAMBA-opt/           # Experimental compatibility track
+├── checkpoints/         # Release layout documentation
+├── scripts/             # Data preparation and export tools
 ├── tests/               # CPU compatibility tests
 ├── Models/              # Legacy research prototype
 ├── utility/             # Legacy experiment utilities

@@ -25,6 +25,7 @@ def test_prepare_tuab_windows_do_not_cross_recordings(tmp_path: Path):
             duration_seconds=10,
             stride_seconds=10,
             resume=False,
+            manifest_only=False,
         )
     assert summaries["train"]["windows"] == 2
     files = sorted((output / "train").glob("*_w*.pkl"))
@@ -33,3 +34,26 @@ def test_prepare_tuab_windows_do_not_cross_recordings(tmp_path: Path):
         sample = pickle.load(stream)
     assert sample["X"].shape == (16, 100)
     assert sample["source_recording"] == "subject_train.pkl"
+
+
+def test_manifest_only_does_not_duplicate_eeg(tmp_path: Path):
+    source = tmp_path / "raw" / "train"
+    output = tmp_path / "windows" / "train"
+    source.mkdir(parents=True)
+    with (source / "recording.pkl").open("wb") as stream:
+        pickle.dump({"X": np.ones((16, 250)), "y": 0}, stream)
+
+    counts = prepare_split(
+        source,
+        output,
+        channels=16,
+        sample_rate=10,
+        duration_seconds=10,
+        stride_seconds=10,
+        resume=False,
+        manifest_only=True,
+    )
+
+    assert counts["windows"] == 2
+    assert not list(output.glob("*_w*.pkl"))
+    assert len((output / "manifest.jsonl").read_text().splitlines()) == 2

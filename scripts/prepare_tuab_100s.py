@@ -56,6 +56,7 @@ def prepare_split(
     duration_seconds: int,
     stride_seconds: int,
     resume: bool,
+    manifest_only: bool,
 ) -> dict[str, int]:
     window = sample_rate * duration_seconds
     stride = sample_rate * stride_seconds
@@ -82,7 +83,9 @@ def prepare_split(
                     "stop_sample": start + window,
                     "label": int(np.asarray(label).reshape(-1)[0]),
                 }
-                if destination.exists() and resume:
+                if manifest_only:
+                    pass
+                elif destination.exists() and resume:
                     counts["skipped"] += 1
                 else:
                     _atomic_pickle(
@@ -119,6 +122,11 @@ def main() -> None:
     parser.add_argument("--duration-seconds", type=int, default=100)
     parser.add_argument("--stride-seconds", type=int, default=100)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--manifest-only",
+        action="store_true",
+        help="Write window indices without duplicating EEG arrays (recommended).",
+    )
     args = parser.parse_args()
 
     if args.input_root.resolve() == args.output_root.resolve():
@@ -132,6 +140,7 @@ def main() -> None:
         "channels": args.channels,
         "duration_seconds": args.duration_seconds,
         "stride_seconds": args.stride_seconds,
+        "storage": "source_recording_manifest" if args.manifest_only else "materialized_pickle_windows",
         "splits": {},
     }
     for split in SPLITS:
@@ -147,6 +156,7 @@ def main() -> None:
             args.duration_seconds,
             args.stride_seconds,
             args.resume,
+            args.manifest_only,
         )
         summary["splits"][split] = counts
         print(f"{split}: {counts}")

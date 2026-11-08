@@ -1,7 +1,12 @@
 Code/scripts/
 Results/
 Checkpoints/
+!checkpoints/
+!checkpoints/README.md
 artifacts/
+*.safetensors
+*.pth
+*.pt
 Other_Models/
 Script/
 

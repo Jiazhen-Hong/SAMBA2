@@ -2,9 +2,13 @@
 
 This document prevents a checkpoint from becoming detached from its data and code history.
 
+The repository has two independent tracks. `reproduction/` defines SAMBA-E and SAMBA-T exactly as reported in the paper. `SAMBA-opt/` contains later experimental changes and must use a different checkpoint name.
+
 ## Paper-aligned definitions
 
 SAMBA-E uses 14-channel, 128 Hz, two-second Emotiv windows. SAMBA-T uses 16-channel, 128 Hz, 100-second TUAB windows. Both recipes use 50% Temporal Semantic Random masking, 200 epochs, AdamW with weight decay 0.01, and the paper's OneCycle schedule.
+
+Do not introduce mixed-duration batches, a common reconstruction head, or a different spectral objective into these two recipes. Those changes belong to SAMBA-opt.
 
 The paper reports 311,011 samples for the six-corpus SAMBA-E pretraining set and 39,810 100-second samples for SAMBA-T. Training must stop if the resolved manifest counts do not match the intended release. Do not silently resample, discard subjects, or substitute a random sample split.
 

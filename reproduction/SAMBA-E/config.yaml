@@ -1,9 +1,13 @@
-# Paper-aligned SAMBA-E pretraining defaults. Paths are intentionally local.
 variant: SAMBA-E
+track: paper_reproduction
+paper_locked: true
 sampling_rate: 128
 window_samples: 256
+duration_seconds: 2
 input_channels: 14
 target_montage: Montage/standard_1020_positions.xlsx
+reconstruction_space: input_montage
+duration_mixing: false
 model:
   base_channels: 64
   bottleneck_channels: 128
@@ -13,10 +17,17 @@ model:
   head_dim: 16
   cdse_hidden_dim: 32
   mixer_backend: mamba2
+objective:
+  masking: temporal_semantic_random
+  mask_ratio: 0.5
+  time_loss: l1
+  frequency_loss: full_rfft_mse
+  time_weight: 1.0
+  frequency_weight: 1.0
 training:
+  seed: 3407
   epochs: 200
   batch_size: 4096
-  mask_ratio: 0.5
   optimizer: AdamW
   weight_decay: 0.01
   scheduler: OneCycleLR
@@ -25,4 +36,12 @@ training:
   final_lr: 0.000005
   warmup_fraction: 0.1
 data:
-  manifest: null  # Required: subject-wise split manifest for the six Emotiv corpora.
+  expected_samples: 311011
+  manifest: null
+  datasets:
+    - DREAMER
+    - Alpha
+    - Crowdsource
+    - STEW
+    - DriverDistraction
+    - Attention
