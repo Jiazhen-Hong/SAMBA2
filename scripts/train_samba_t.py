@@ -21,6 +21,7 @@ from samba_eeg import (
     SambaConfig,
     SambaModel,
     TUABEDFWindowDataset,
+    TUABNpyShardDataset,
     temporal_semantic_random_mask,
 )
 from samba_eeg.losses import TimeFrequencyReconstructionLoss
@@ -77,7 +78,13 @@ def validate(model, loader, positions, loss_function, device, seed: int, max_bat
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path("reproduction/SAMBA-T/config.yaml"))
-    parser.add_argument("--manifest-root", type=Path, required=True)
+    data_source = parser.add_mutually_exclusive_group(required=True)
+    data_source.add_argument("--manifest-root", type=Path, help="Verified EDF manifest for on-demand loading.")
+    data_source.add_argument(
+        "--materialized-root",
+        type=Path,
+        help="Pre-normalized NPY shards created by scripts/materialize_tuab_100s.py.",
+    )
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--resume", type=Path, default=None)
     parser.add_argument("--num-workers", type=int, default=4)
@@ -90,7 +97,15 @@ def main() -> None:
     recipe = yaml.safe_load(args.config.read_text())
     if recipe.get("variant") != "SAMBA-T" or recipe.get("paper_locked") is not True:
         raise ValueError("this trainer only accepts the locked SAMBA-T reproduction recipe")
-    summary = json.loads((args.manifest_root / "summary.json").read_text())
+    if args.materialized_root:
+        materialization = json.loads((args.materialized_root / "materialization.json").read_text())
+        summary = materialization["source_summary"]
+        if materialization.get("format") != TUABNpyShardDataset.FORMAT:
+            raise ValueError("unsupported materialized TUAB format")
+        if materialization.get("dtype") != "float32" or materialization.get("normalized") is not True:
+            raise ValueError("paper reproduction requires normalized float32 materialized windows")
+    else:
+        summary = json.loads((args.manifest_root / "summary.json").read_text())
     expected = int(recipe["data"]["expected_samples"])
     if summary.get("total_windows") != expected or not summary.get("matches_paper_count"):
         raise ValueError(f"verified SAMBA-T manifest must contain exactly {expected} windows")
@@ -123,10 +138,16 @@ def main() -> None:
     if world_size > 1:
         model = DistributedDataParallel(model, device_ids=[local_rank])
 
-    datasets = {
-        split: TUABEDFWindowDataset(args.manifest_root / f"{split}.jsonl")
-        for split in ("train", "val")
-    }
+    if args.materialized_root:
+        datasets = {
+            split: TUABNpyShardDataset(args.materialized_root, split)
+            for split in ("train", "val")
+        }
+    else:
+        datasets = {
+            split: TUABEDFWindowDataset(args.manifest_root / f"{split}.jsonl")
+            for split in ("train", "val")
+        }
     global_batch = args.batch_size or int(recipe["training"]["batch_size"])
     if global_batch % world_size:
         raise ValueError(f"global batch size {global_batch} is not divisible by world size {world_size}")

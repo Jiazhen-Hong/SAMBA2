@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import random
+from bisect import bisect_right
 from collections import OrderedDict, defaultdict
 from pathlib import Path
 
@@ -94,12 +95,74 @@ class TUABEDFWindowDataset(Dataset[torch.Tensor]):
         return torch.from_numpy(window)
 
 
+class TUABNpyShardDataset(Dataset[torch.Tensor]):
+    """Read pre-normalized TUAB windows from resumable float32 NPY shards."""
+
+    FORMAT = "samba-tuab-npy-shards-v1"
+
+    def __init__(self, root: str | Path, split: str, cache_shards: int = 8) -> None:
+        self.root = Path(root)
+        self.split = split
+        metadata_path = self.root / "materialization.json"
+        if not metadata_path.exists():
+            raise FileNotFoundError(
+                f"incomplete materialized dataset: {metadata_path} is missing; "
+                "rerun scripts/materialize_tuab_100s.py"
+            )
+        metadata = json.loads(metadata_path.read_text())
+        if metadata.get("format") != self.FORMAT:
+            raise ValueError(f"unsupported TUAB materialization format in {metadata_path}")
+        if metadata.get("dtype") != "float32" or metadata.get("normalized") is not True:
+            raise ValueError("paper reproduction requires normalized float32 materialized windows")
+
+        index_path = self.root / split / "index.json"
+        index = json.loads(index_path.read_text())
+        self.shards = index["shards"]
+        self._stops = [int(shard["stop"]) for shard in self.shards]
+        self.recording_groups = [[int(item) for item in group] for group in index["recording_groups"]]
+        self.cache_shards = cache_shards
+        self._cache: OrderedDict[str, np.ndarray] = OrderedDict()
+        self._length = int(index["windows"])
+        if not self.shards or self._stops[-1] != self._length:
+            raise ValueError(f"invalid shard index: {index_path}")
+
+    def __len__(self) -> int:
+        return self._length
+
+    def _load_shard(self, relative_path: str) -> np.ndarray:
+        if relative_path in self._cache:
+            array = self._cache.pop(relative_path)
+            self._cache[relative_path] = array
+            return array
+        path = self.root / relative_path
+        array = np.load(path, mmap_mode="r", allow_pickle=False)
+        if array.dtype != np.float32 or array.ndim != 3 or array.shape[1:] != (16, 12_800):
+            raise ValueError(f"invalid materialized shard {path}: {array.shape}/{array.dtype}")
+        self._cache[relative_path] = array
+        while len(self._cache) > self.cache_shards:
+            self._cache.popitem(last=False)
+        return array
+
+    def __getitem__(self, index: int) -> torch.Tensor:
+        if index < 0:
+            index += self._length
+        if index < 0 or index >= self._length:
+            raise IndexError(index)
+        shard_index = bisect_right(self._stops, index)
+        shard = self.shards[shard_index]
+        array = self._load_shard(shard["path"])
+        local_index = index - int(shard["start"])
+        # Memmaps are read-only. Copying makes the returned tensor safe for PyTorch.
+        window = np.array(array[local_index], dtype=np.float32, copy=True)
+        return torch.from_numpy(window)
+
+
 class RecordingGroupedDistributedSampler(Sampler[int]):
     """Shuffle recordings while preserving EDF locality and equal DDP step counts."""
 
     def __init__(
         self,
-        dataset: TUABEDFWindowDataset,
+        dataset: TUABEDFWindowDataset | TUABNpyShardDataset,
         batch_size: int,
         rank: int = 0,
         world_size: int = 1,

@@ -17,13 +17,22 @@ python scripts/prepare_tuab_edf_manifest.py \
 
 Training must not start unless the manifest has no unresolved recordings and resolves exactly 39,810 windows.
 
-Run a two-GPU integration smoke test before the full experiment:
+For repeated training, materialize the normalized windows once on a writable data disk. The strict float32 copy uses about 30.4 GiB. Output is split into restartable shards, so rerunning the same command resumes after completed shards:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc_per_node=2 \
-  scripts/train_samba_t.py \
-  --config reproduction/SAMBA-T/config.yaml \
+python scripts/materialize_tuab_100s.py \
   --manifest-root data/manifests/TUAB_EDF_16ch_100s \
+  --output-root /data/jiazhen-tmp-tuab100
+```
+
+The script reserves 2 GiB of free space and writes `materialization.json` only after all train, validation, and test shards are complete.
+
+Run a single-GPU integration smoke test before the full experiment:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/train_samba_t.py \
+  --config reproduction/SAMBA-T/config.yaml \
+  --materialized-root /data/jiazhen-tmp-tuab100 \
   --output-root checkpoints/SAMBA-T/smoke-test \
   --smoke-test
 ```
@@ -31,9 +40,10 @@ CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc_per_node=2 \
 Then start the complete 200-epoch paper run:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc_per_node=2 \
-  scripts/train_samba_t.py \
+CUDA_VISIBLE_DEVICES=0 python scripts/train_samba_t.py \
   --config reproduction/SAMBA-T/config.yaml \
-  --manifest-root data/manifests/TUAB_EDF_16ch_100s \
+  --materialized-root /data/jiazhen-tmp-tuab100 \
   --output-root checkpoints/SAMBA-T/run-001
 ```
+
+Direct EDF loading remains available through `--manifest-root` for validation and smoke tests, but it is much slower because every run repeats EDF loading and resampling.
