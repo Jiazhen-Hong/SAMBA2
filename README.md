@@ -145,6 +145,40 @@ scores = evaluate_model(
 
 NeuralBench runs the model itself; uploading a checkpoint alone does not produce a score. Its bring-your-own-model route expects one model instance to accept arbitrary channel counts and window lengths, and passes `channel_positions` into `forward`. SAMBA's adapter follows that interface. See the [official NeuralBench guide](https://facebookresearch.github.io/neuroai/neuralbench/auto_examples/quickstart/03_evaluate_your_own_model.html).
 
+### Rebuilt training pipeline
+
+Prepare the five verified Emotiv sources. This creates normalized float32 arrays and channel masks under `/data/SAMBA-tmp/Emotiv`. DREAMER is excluded. Existing TUAB arrays are memory mapped directly and are not copied.
+
+```bash
+python scripts/prepare_samba_data.py \
+  --input-root /data/data_downstream_task \
+  --output-root /data/SAMBA-tmp/Emotiv
+```
+
+Run a small single-GPU integration test:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/train_samba.py \
+  --config configs/samba.yaml \
+  --emotiv-root /data/SAMBA-tmp/Emotiv \
+  --tuab-root /data/data_downstream_task/TUAB/TUAB_16ch_10s \
+  --output-root /data/SAMBA-tmp/checkpoints/SAMBA/smoke-test \
+  --micro-batch-size 32 \
+  --smoke-test
+```
+
+Then start the full run in `tmux`:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/train_samba.py \
+  --config configs/samba.yaml \
+  --emotiv-root /data/SAMBA-tmp/Emotiv \
+  --tuab-root /data/data_downstream_task/TUAB/TUAB_16ch_10s \
+  --output-root /data/SAMBA-tmp/checkpoints/SAMBA/run-001
+```
+
+The default physical batch is 256 with four-step gradient accumulation, giving an effective batch of 1,024. Source selection is 50% TUAB and 50% across the five Emotiv datasets. Training checkpoints remain on `/data` because the Axon home filesystem has limited free space.
+
 ---
 
 ## Repository Structure

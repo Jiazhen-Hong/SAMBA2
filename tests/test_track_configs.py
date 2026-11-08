@@ -16,6 +16,8 @@ def test_single_checkpoint_config_is_not_labeled_as_paper_reproduction():
     assert recipe["data"]["batching"] == "source_homogeneous_microbatches"
     assert recipe["data"]["normalization"] == "per_window_per_channel_abs_q95"
     assert recipe["data"]["mixture"] == {"TUAB": 0.5, "Emotiv_total": 0.5}
+    assert recipe["training"]["micro_batch_size"] * recipe["training"]["gradient_accumulation_steps"] == 1024
+    assert recipe["objective"]["frequency_loss"] == "full_window_rfft"
 
 
 def test_recovered_tuab_duration_is_not_inferred_from_directory_name():

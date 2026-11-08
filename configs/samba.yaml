@@ -50,12 +50,26 @@ objective:
   masking: temporal_semantic_random
   mask_ratio: 0.5
   time_loss: l1
-  frequency_loss: fixed_window_stft
+  frequency_loss: full_window_rfft
+  time_weight: 1.0
+  frequency_weight: 1.0
 
 training:
   seed: 3407
   sampler: source_and_duration_bucketed
-  gradient_accumulation: true
+  epochs: 200
+  optimizer_steps_per_epoch: 256
+  micro_batch_size: 256
+  gradient_accumulation_steps: 4
+  channel_dropout: 0.1
+  initial_lr: 5.0e-5
+  max_lr: 5.0e-4
+  final_lr: 5.0e-7
+  warmup_fraction: 0.1
+  weight_decay: 0.01
+  validation_batches_per_source: 8
+  save_every: 10
+  precision: bf16
 
 evaluation:
   neuralbench: true

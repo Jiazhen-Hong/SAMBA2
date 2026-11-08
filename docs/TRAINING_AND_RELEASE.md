@@ -23,6 +23,10 @@ A directory name is not accepted as duration metadata. In particular, the recove
 
 Sources with different montages or lengths use homogeneous microbatches. They are mapped to a shared coordinate-driven reconstruction space before the reconstruction objective is evaluated. Downstream encoding remains channel and length flexible.
 
+The current pipeline includes Alpha, Attention, Crowdsource, DriverDistraction, STEW, and TUAB. DREAMER is excluded because its recovered array contains systematic constant channels. Emotiv and TUAB each receive 50% of source sampling probability. Within the Emotiv half, the five datasets are sampled equally.
+
+All Emotiv sources are normalized per window and channel by the absolute 95th percentile. Constant or nonfinite channels are zeroed and marked invalid in the channel mask. The recovered TUAB arrays already use the same scale rule.
+
 ## Required release artifacts
 
 The released `SAMBA` directory must contain:
