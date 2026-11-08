@@ -21,20 +21,25 @@ def temporal_semantic_random_mask(
     batch, channels, length = signals.shape
     visible = length - int(round(length * mask_ratio))
     blocks = max(1, min(num_visible_blocks, visible))
-    mask = torch.ones((batch, length), dtype=torch.bool, device=signals.device)
+    raw_lengths = torch.rand((batch, blocks), device=signals.device, generator=generator)
+    block_lengths = torch.floor(
+        raw_lengths / raw_lengths.sum(dim=1, keepdim=True) * (visible - blocks)
+    ).long() + 1
+    block_lengths[:, -1] += visible - block_lengths.sum(dim=1)
 
-    for index in range(batch):
-        raw = torch.rand(blocks, device=signals.device, generator=generator)
-        block_lengths = torch.floor(raw / raw.sum() * (visible - blocks)).long() + 1
-        block_lengths[-1] += visible - int(block_lengths.sum())
-        gap_total = length - visible
-        raw_gaps = torch.rand(blocks + 1, device=signals.device, generator=generator)
-        gaps = torch.floor(raw_gaps / raw_gaps.sum() * gap_total).long()
-        gaps[-1] += gap_total - int(gaps.sum())
-        cursor = int(gaps[0])
-        for block_index, block_length in enumerate(block_lengths.tolist()):
-            mask[index, cursor : cursor + block_length] = False
-            cursor += block_length + int(gaps[block_index + 1])
+    gap_total = length - visible
+    raw_gaps = torch.rand((batch, blocks + 1), device=signals.device, generator=generator)
+    gaps = torch.floor(raw_gaps / raw_gaps.sum(dim=1, keepdim=True) * gap_total).long()
+    gaps[:, -1] += gap_total - gaps.sum(dim=1)
 
-    mask = mask[:, None, :].expand(batch, channels, length)
+    starts = torch.empty_like(block_lengths)
+    starts[:, 0] = gaps[:, 0]
+    if blocks > 1:
+        starts[:, 1:] = gaps[:, :1] + torch.cumsum(
+            block_lengths[:, :-1] + gaps[:, 1:blocks], dim=1
+        )
+    ends = starts + block_lengths
+    time = torch.arange(length, device=signals.device)[None, None, :]
+    visible_mask = ((time >= starts[..., None]) & (time < ends[..., None])).any(dim=1)
+    mask = (~visible_mask)[:, None, :].expand(batch, channels, length)
     return signals.masked_fill(mask, 0), mask

@@ -61,6 +61,8 @@ training:
   optimizer_steps_per_epoch: 256
   micro_batch_size: 256
   gradient_accumulation_steps: 4
+  workers_per_source: 2
+  prefetch_factor: 4
   channel_dropout: 0.1
   initial_lr: 5.0e-5
   max_lr: 5.0e-4

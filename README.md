@@ -147,7 +147,7 @@ NeuralBench runs the model itself; uploading a checkpoint alone does not produce
 
 ### Rebuilt training pipeline
 
-Prepare the five verified Emotiv sources. This creates normalized float32 arrays and channel masks under `/data/SAMBA-tmp/Emotiv`. DREAMER is excluded. Existing TUAB arrays are memory mapped directly and are not copied.
+Prepare the five verified Emotiv sources. This creates normalized float32 arrays and channel masks under `/data/SAMBA-tmp/Emotiv`. DREAMER is excluded. Existing 256-sample TUAB arrays from `TUAB_16ch_10s` are memory mapped directly and are not copied. The rebuilt pipeline does not generate or require TUAB100.
 
 ```bash
 python scripts/prepare_samba_data.py \
@@ -178,6 +178,8 @@ CUDA_VISIBLE_DEVICES=0 python scripts/train_samba.py \
 ```
 
 The default physical batch is 256 with four-step gradient accumulation, giving an effective batch of 1,024. Source selection is 50% TUAB and 50% across the five Emotiv datasets. Training checkpoints remain on `/data` because the Axon home filesystem has limited free space.
+
+The default loader uses two persistent workers for each of six sources, for 12 workers total, with pinned memory and four-batch prefetching. Temporal Semantic Random Masking is vectorized on the GPU. Normalization and resampling are never performed inside the training loop.
 
 ---
 

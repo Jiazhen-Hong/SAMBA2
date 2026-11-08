@@ -69,6 +69,7 @@ def make_loaders(
     split: str,
     batch_size: int,
     workers: int,
+    prefetch_factor: int,
     seed: int,
 ) -> dict[str, DataLoader]:
     datasets = {
@@ -90,6 +91,7 @@ def make_loaders(
             num_workers=workers if split == "train" else 0,
             pin_memory=True,
             persistent_workers=split == "train" and workers > 0,
+            prefetch_factor=prefetch_factor if split == "train" and workers > 0 else None,
             generator=generator,
         )
     return loaders
@@ -201,7 +203,12 @@ def main() -> None:
     parser.add_argument("--resume", type=Path, default=None)
     parser.add_argument("--micro-batch-size", type=int, default=None)
     parser.add_argument("--accumulation-steps", type=int, default=None)
-    parser.add_argument("--workers-per-source", type=int, default=1)
+    parser.add_argument(
+        "--workers-per-source",
+        type=int,
+        default=None,
+        help="Persistent workers per source; defaults to the recipe (12 workers total).",
+    )
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--optimizer-steps-per-epoch", type=int, default=None)
     parser.add_argument("--log-every", type=int, default=25)
@@ -219,6 +226,8 @@ def main() -> None:
     if not torch.cuda.is_available():
         raise RuntimeError("SAMBA pretraining requires CUDA")
     device = torch.device("cuda")
+    torch.set_float32_matmul_precision("high")
+    torch.backends.cuda.matmul.allow_tf32 = True
     training = recipe["training"]
     seed = int(training["seed"])
     random.seed(seed)
@@ -255,11 +264,29 @@ def main() -> None:
         args.optimizer_steps_per_epoch or int(training["optimizer_steps_per_epoch"])
     )
     validation_batches = 1 if args.smoke_test else int(training["validation_batches_per_source"])
+    workers_per_source = (
+        args.workers_per_source
+        if args.workers_per_source is not None
+        else int(training["workers_per_source"])
+    )
+    prefetch_factor = int(training["prefetch_factor"])
     train_loaders = make_loaders(
-        args.emotiv_root, args.tuab_root, "train", batch_size, args.workers_per_source, seed
+        args.emotiv_root,
+        args.tuab_root,
+        "train",
+        batch_size,
+        workers_per_source,
+        prefetch_factor,
+        seed,
     )
     val_loaders = make_loaders(
-        args.emotiv_root, args.tuab_root, "val", batch_size, 0, seed + 1000
+        args.emotiv_root,
+        args.tuab_root,
+        "val",
+        batch_size,
+        0,
+        prefetch_factor,
+        seed + 1000,
     )
     names, weights = source_probabilities(recipe)
     source_weights = dict(zip(names, weights))
