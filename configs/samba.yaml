@@ -1,5 +1,5 @@
 variant: SAMBA
-status: pipeline_rebuild
+status: data_policy_frozen
 paper_reproduction: false
 sampling_rate: 128
 target_montage: Montage/standard_1020_positions.xlsx
@@ -7,18 +7,34 @@ reconstruction_space: common_cdse_target
 
 data:
   batching: source_homogeneous_microbatches
+  normalization: per_window_per_channel_abs_q95
+  constant_channel_policy: mask
+  mixture:
+    TUAB: 0.5
+    Emotiv_total: 0.5
   sources:
     - name: Emotiv
       channels: 14
       window_samples: 256
-      preprocessing: pending_verification
+      included_datasets:
+        - Alpha
+        - Attention
+        - Crowdsource
+        - DriverDistraction
+        - STEW
+      excluded_datasets:
+        DREAMER: Recovered file has systematic constant channels.
+      driver_distraction_source: DriverDistraction_X.npy
+      split_policy: subject_wise
+      preprocessing: rebuilt_and_versioned
     - name: TUAB
       channels: 16
       window_samples: 256
       source_directory_name: TUAB_16ch_10s
       duration_seconds: null
-      preprocessing: pending_verification
-      note: The recovered array shape does not verify the duration implied by the directory name.
+      preprocessing: existing_per_window_per_channel_abs_q95
+      split_policy: recovered_split_without_ids
+      note: The array shape does not verify the duration implied by the directory name.
 
 model:
   base_channels: 64

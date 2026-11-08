@@ -20,12 +20,27 @@ All sampled arrays contained finite values. However, the Emotiv sources clearly 
 
 The recovered TUAB directory is named `TUAB_16ch_10s`, but each stored window contains 256 samples. At an assumed 128 Hz, this is two seconds. The files contain no sampling-rate metadata and no recording or subject identifiers. Five adjacent rows therefore must not be concatenated and labeled as a 10-second recording.
 
+The absolute 95th percentile per TUAB channel is approximately 0.9994 in every split. This confirms that the arrays already use the historical per-window, per-channel absolute-q95 scaling rather than z-score normalization.
+
+## Targeted findings
+
+The recovered DREAMER file is not suitable for the new checkpoint. In a 512-window sample, channel 0 was constant in every window, channel 1 was constant in 91.6% of windows, and every sampled window contained at least one constant channel. DREAMER is excluded until it can be regenerated from a verified source.
+
+DriverDistraction has two different recovered representations:
+
+- `DriverDistraction.npy` contains the historical 48,982 train, 4,481 validation, and 12,734 test windows, totaling 66,197, but it does not retain subject IDs.
+- `DriverDistraction_X.npy` contains 116,140 windows and retains 16 subject IDs.
+
+Because the new checkpoint is not a paper reproduction, the rebuilt pipeline uses `DriverDistraction_X.npy` and creates a new deterministic subject-wise split. This is more auditable than reusing a historical split without subject identifiers.
+
 ## Current decision
 
 - Do not claim strict reproduction of the lost SAMBA-E or SAMBA-T checkpoints.
-- Do not join the recovered arrays in one training loader without a new, explicit normalization policy.
+- Normalize every Emotiv window and channel by its absolute 95th percentile. TUAB already uses this rule.
+- Mask constant channels and reject any window with no valid channel.
+- Exclude DREAMER from the current checkpoint.
+- Use the subject-ID version of DriverDistraction and create a new subject-wise split.
 - Do not infer duration from directory names.
 - Do not concatenate TUAB rows without verified recording boundaries.
-- Resolve DREAMER constant channels and the DriverDistraction count mismatch before training.
 
 The single new `SAMBA` checkpoint will be released only after these checks are encoded in a versioned manifest and preprocessing pipeline.
