@@ -44,9 +44,12 @@ def signal_statistics(array: np.ndarray, max_windows: int = 256) -> dict[str, An
     safe = np.where(finite, sample, np.nan)
     channel_mean = np.nanmean(safe, axis=-1)
     channel_std = np.nanstd(safe, axis=-1)
+    absolute_q95 = np.nanquantile(np.abs(safe), 0.95, axis=-1)
     near_zscore = (np.abs(channel_mean) <= 0.1) & (channel_std >= 0.8) & (channel_std <= 1.2)
+    constant_channels = channel_std < 1e-8
     quantiles = np.quantile(finite_values, [0.01, 0.05, 0.5, 0.95, 0.99])
     std_quantiles = np.quantile(channel_std[np.isfinite(channel_std)], [0.05, 0.5, 0.95])
+    scale_quantiles = np.quantile(absolute_q95[np.isfinite(absolute_q95)], [0.05, 0.5, 0.95])
 
     return {
         "shape": list(array.shape),
@@ -66,8 +69,16 @@ def signal_statistics(array: np.ndarray, max_windows: int = 256) -> dict[str, An
             "q50": float(std_quantiles[1]),
             "q95": float(std_quantiles[2]),
         },
+        "absolute_q95_quantiles": {
+            "q05": float(scale_quantiles[0]),
+            "q50": float(scale_quantiles[1]),
+            "q95": float(scale_quantiles[2]),
+        },
         "near_zscore_channel_fraction": float(near_zscore.mean()),
-        "constant_channel_fraction": float((channel_std < 1e-8).mean()),
+        "constant_channel_fraction": float(constant_channels.mean()),
+        "windows_with_any_constant_channel_fraction": float(constant_channels.any(axis=1).mean()),
+        "windows_with_all_constant_channels_fraction": float(constant_channels.all(axis=1).mean()),
+        "constant_fraction_by_channel": [float(value) for value in constant_channels.mean(axis=0)],
     }
 
 
@@ -108,7 +119,7 @@ def array_description(path: Path, max_windows: int) -> dict[str, Any]:
     return result
 
 
-def choose_emotiv_files(root: Path, dataset: str) -> list[Path]:
+def choose_emotiv_files(root: Path, dataset: str, include_main_file: bool = False) -> list[Path]:
     directory = root / dataset
     if not directory.exists():
         return []
@@ -116,6 +127,9 @@ def choose_emotiv_files(root: Path, dataset: str) -> list[Path]:
     if x_file.exists():
         files = [x_file]
         files.extend(path for path in (directory / f"{dataset}_y.npy", directory / f"{dataset}_id.npy") if path.exists())
+        main = directory / f"{dataset}.npy"
+        if include_main_file and main.exists():
+            files.append(main)
         return files
     main = directory / f"{dataset}.npy"
     return [main] if main.exists() else []
@@ -139,10 +153,15 @@ def inventory_processed(root: Path) -> list[dict[str, Any]]:
     return inventory
 
 
-def audit_emotiv(root: Path, max_windows: int) -> dict[str, Any]:
+def audit_emotiv(
+    root: Path,
+    max_windows: int,
+    datasets_to_audit: tuple[str, ...],
+    include_main_files: bool,
+) -> dict[str, Any]:
     datasets = {}
-    for dataset in EMOTIV_DATASETS:
-        files = choose_emotiv_files(root, dataset)
+    for dataset in datasets_to_audit:
+        files = choose_emotiv_files(root, dataset, include_main_files)
         datasets[dataset] = {
             "files": [array_description(path, max_windows) for path in files],
             "status": "found" if files else "missing",
@@ -196,13 +215,20 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--max-windows", type=int, default=256)
     parser.add_argument("--assumed-sample-rate", type=float, default=128.0)
+    parser.add_argument("--emotiv-datasets", nargs="+", choices=EMOTIV_DATASETS, default=list(EMOTIV_DATASETS))
+    parser.add_argument("--include-main-files", action="store_true")
     args = parser.parse_args()
     if args.max_windows < 1:
         raise ValueError("--max-windows must be positive")
 
     report = {
         "read_only": True,
-        "emotiv": audit_emotiv(args.emotiv_root, args.max_windows),
+        "emotiv": audit_emotiv(
+            args.emotiv_root,
+            args.max_windows,
+            tuple(args.emotiv_datasets),
+            args.include_main_files,
+        ),
         "tuab": audit_tuab(args.tuab_root, args.max_windows, args.assumed_sample_rate),
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

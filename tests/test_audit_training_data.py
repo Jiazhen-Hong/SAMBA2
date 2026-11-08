@@ -16,3 +16,5 @@ def test_signal_statistics_detects_channelwise_zscore():
     assert stats["finite_fraction"] == 1.0
     assert stats["near_zscore_channel_fraction"] == 1.0
     assert stats["constant_channel_fraction"] == 0.0
+    assert stats["windows_with_any_constant_channel_fraction"] == 0.0
+    assert 1.8 < stats["absolute_q95_quantiles"]["q50"] < 2.2

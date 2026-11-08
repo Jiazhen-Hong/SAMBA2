@@ -93,6 +93,8 @@ The repository now targets one checkpoint named **SAMBA**. The rebuilt pipeline 
 
 The recovered TUAB array currently has 256 samples per window. Its directory name contains `10s`, but the surviving files do not provide enough metadata to verify a 10-second duration. The configuration records this duration as unknown rather than inferring it from the directory name.
 
+The current evidence and blocking data issues are recorded in [`docs/DATA_AUDIT.md`](docs/DATA_AUDIT.md).
+
 The new checkpoint will be released only after the rebuilt data manifest, preprocessing record, validation result, code revision, and model weights are available together. Until then, pretrained weights are **not yet included**.
 
 The reusable implementation is under `src/samba_eeg/`. The research prototype under `Models/` remains temporarily available for comparison with the 2025 code.
