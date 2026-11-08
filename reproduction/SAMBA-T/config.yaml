@@ -38,6 +38,4 @@ training:
   warmup_fraction: 0.1
 data:
   expected_samples: 39810
-  source_root: /data/data_downstream_task/TUAB/processed_Raw
-  manifest_root: data/manifests/TUAB_16ch_100s
   manifest: null
