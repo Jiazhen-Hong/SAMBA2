@@ -4,4 +4,15 @@ Paper-aligned reproduction using the TUAB BIOT train, validation, and test recor
 
 Expected release directory: `checkpoints/SAMBA-T/`.
 
-The preprocessing and training command will be added only after the retained TUAB source format is verified against the original EDF-to-bipolar preprocessing code. The release must resolve exactly 39,810 windows; an unverified data conversion must not be used for this checkpoint.
+The retained `processed_Raw` files contain continuous 14-channel signals and cannot reproduce the paper's 16 bipolar channels. `TUAB_16ch_10s` is also mislabeled and contains 256-sample windows without recording boundaries. Therefore, paper reproduction starts from the TUAB EDF files.
+
+Generate a lightweight manifest using the original 16 bipolar derivations, the retained train/validation/test recording IDs, 128 Hz, and non-overlapping 100-second windows:
+
+```bash
+python scripts/prepare_tuab_edf_manifest.py \
+  --edf-root /data/neuralbench_data/tuh_eeg/tuab/v3.0.1/edf \
+  --split-reference-root /data/data_downstream_task/TUAB/processed_Raw \
+  --output-root data/manifests/TUAB_EDF_16ch_100s
+```
+
+Training must not start unless the manifest has no unresolved recordings and resolves exactly 39,810 windows.
