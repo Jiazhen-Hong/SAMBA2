@@ -21,6 +21,22 @@ class _GRUMixer(nn.Module):
         return self.gru(x)[0]
 
 
+def mamba2_fused_kernels_available() -> bool:
+    """Return True only when every function required by Mamba-2's fused path exists."""
+    try:
+        from causal_conv1d import causal_conv1d_fn
+        from mamba_ssm.ops.triton import ssd_combined
+
+        required = (
+            causal_conv1d_fn,
+            ssd_combined.causal_conv1d_fwd_function,
+            ssd_combined.causal_conv1d_bwd_function,
+        )
+        return all(callable(function) for function in required)
+    except Exception:
+        return False
+
+
 def _mixer(config: SambaConfig, width: int, head_dim: int | None = None) -> nn.Module:
     if config.mixer_backend == "gru":
         return _GRUMixer(width)
@@ -30,7 +46,13 @@ def _mixer(config: SambaConfig, width: int, head_dim: int | None = None) -> nn.M
         from mamba_ssm import Mamba2
     except ImportError as error:
         raise ImportError("Install SAMBA with `pip install -e '.[mamba]'` to use Mamba-2") from error
-    kwargs = dict(d_model=width, d_state=config.d_state, d_conv=config.d_conv, expand=config.expand)
+    kwargs = dict(
+        d_model=width,
+        d_state=config.d_state,
+        d_conv=config.d_conv,
+        expand=config.expand,
+        use_mem_eff_path=mamba2_fused_kernels_available(),
+    )
     if head_dim is not None:
         kwargs["headdim"] = head_dim
     return Mamba2(**kwargs)
