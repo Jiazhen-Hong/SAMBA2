@@ -260,7 +260,7 @@ def main() -> None:
     batch_size = args.micro_batch_size or int(training["micro_batch_size"])
     accumulation = args.accumulation_steps or int(training["gradient_accumulation_steps"])
     epochs = 1 if args.smoke_test else (args.epochs or int(training["epochs"]))
-    steps_per_epoch = 2 if args.smoke_test else (
+    steps_per_epoch = 4 if args.smoke_test else (
         args.optimizer_steps_per_epoch or int(training["optimizer_steps_per_epoch"])
     )
     validation_batches = 1 if args.smoke_test else int(training["validation_batches_per_source"])
@@ -270,27 +270,8 @@ def main() -> None:
         else int(training["workers_per_source"])
     )
     prefetch_factor = int(training["prefetch_factor"])
-    train_loaders = make_loaders(
-        args.emotiv_root,
-        args.tuab_root,
-        "train",
-        batch_size,
-        workers_per_source,
-        prefetch_factor,
-        seed,
-    )
-    val_loaders = make_loaders(
-        args.emotiv_root,
-        args.tuab_root,
-        "val",
-        batch_size,
-        0,
-        prefetch_factor,
-        seed + 1000,
-    )
     names, weights = source_probabilities(recipe)
     source_weights = dict(zip(names, weights))
-    iterators = {name: iter(loader) for name, loader in train_loaders.items()}
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -326,6 +307,26 @@ def main() -> None:
         source_rng.setstate(checkpoint["source_rng_state"])
         torch.set_rng_state(checkpoint["torch_rng_state"])
         torch.cuda.set_rng_state_all(checkpoint["cuda_rng_state"])
+
+    train_loaders = make_loaders(
+        args.emotiv_root,
+        args.tuab_root,
+        "train",
+        batch_size,
+        workers_per_source,
+        prefetch_factor,
+        seed,
+    )
+    val_loaders = make_loaders(
+        args.emotiv_root,
+        args.tuab_root,
+        "val",
+        batch_size,
+        0,
+        prefetch_factor,
+        seed + 1000,
+    )
+    iterators = {name: iter(loader) for name, loader in train_loaders.items()}
 
     args.output_root.mkdir(parents=True, exist_ok=True)
     for epoch in range(start_epoch, epochs):
