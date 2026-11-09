@@ -18,6 +18,11 @@ def main() -> None:
     parser.add_argument("--name", default="samba")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Recompute matching NeuralBench jobs instead of reusing cached failures/results",
+    )
+    parser.add_argument(
         "--download",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -42,6 +47,7 @@ def main() -> None:
         download=args.download,
         prepare=args.prepare,
         debug=args.debug,
+        force=args.force,
     )
     print(scores)
 

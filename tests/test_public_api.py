@@ -1,4 +1,7 @@
+from types import SimpleNamespace
+
 import torch
+from torch import nn
 
 from samba_eeg import SambaConfig, SambaModel, temporal_semantic_random_mask
 from samba_eeg.integrations import SambaNeuralBenchBackbone
@@ -31,6 +34,23 @@ def test_runtime_montage_and_neuralbench_shape():
     assert output.spatial_weights.shape == (2, 4, 3)
     assert torch.allclose(output.spatial_weights[0, :, 2], torch.zeros(4))
     assert SambaNeuralBenchBackbone(model)(signals, positions, valid).shape == (2, 4, 16)
+
+
+def test_neuralbench_cpu_shape_probe_for_cuda_only_mamba():
+    class CudaOnlyModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = SimpleNamespace(
+                mixer_backend="mamba2",
+                bottleneck_channels=128,
+            )
+
+        def encode(self, *_args, **_kwargs):
+            raise AssertionError("CPU shape probe must not execute Mamba-2")
+
+    adapter = SambaNeuralBenchBackbone(CudaOnlyModel())
+    output = adapter(torch.randn(1, 21, 1000), torch.randn(1, 21, 3))
+    assert output.shape == (1, 125, 128)
 
 
 def test_nan_position_is_treated_as_missing_channel():
