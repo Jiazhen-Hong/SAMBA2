@@ -17,6 +17,18 @@ def main() -> None:
     parser.add_argument("--dataset", default=None)
     parser.add_argument("--name", default="samba")
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument(
+        "--download",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Download selected datasets first (use --no-download for manually installed data)",
+    )
+    parser.add_argument(
+        "--prepare",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Prepare NeuralBench caches before evaluation",
+    )
     args = parser.parse_args()
 
     model = SambaNeuralBenchBackbone(SambaModel.from_pretrained(args.checkpoint))
@@ -27,6 +39,8 @@ def main() -> None:
         dataset=args.dataset,
         name=args.name,
         downstream_wrapper="linear_probe_mean",
+        download=args.download,
+        prepare=args.prepare,
         debug=args.debug,
     )
     print(scores)

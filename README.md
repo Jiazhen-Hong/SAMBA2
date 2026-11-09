@@ -145,6 +145,16 @@ scores = evaluate_model(
 
 NeuralBench runs the model itself; uploading a checkpoint alone does not produce a score. Its bring-your-own-model route expects one model instance to accept arbitrary channel counts and window lengths, and passes `channel_positions` into `forward`. SAMBA's adapter follows that interface. See the [official NeuralBench guide](https://facebookresearch.github.io/neuroai/neuralbench/auto_examples/quickstart/03_evaluate_your_own_model.html).
 
+For manually installed datasets such as TUAB, skip NeuralBench's automatic download
+step while retaining cache preparation:
+
+```bash
+python scripts/evaluate_neuralbench.py path/to/SAMBA \
+  --task pathology \
+  --debug \
+  --no-download
+```
+
 ### Rebuilt training pipeline
 
 Prepare the five verified Emotiv sources. This creates normalized float32 arrays and channel masks under `/data/SAMBA-tmp/Emotiv`. DREAMER is excluded. Existing 256-sample TUAB arrays from `TUAB_16ch_10s` are memory mapped directly and are not copied. The rebuilt pipeline does not generate or require TUAB100.
