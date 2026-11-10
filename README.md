@@ -189,8 +189,21 @@ python scripts/prepare_samba_data.py \
   --output-root /data/SAMBA-tmp/Emotiv
 ```
 
-Use the Python 3.12 NeuralBench environment to check the selected raw sources
-and batch schema before writing arrays:
+Prepare true 10-second TUAB windows directly from the raw EDF files. This path
+uses the paper's 16 bipolar channels, limits processing to eight workers, and is
+resumable at recording boundaries. It does not build a NeuralBench task cache.
+
+```bash
+python scripts/prepare_tuab_10s.py \
+  --edf-root /data/neuralbench_data/Lopez2017Tuab/edf \
+  --split-reference-root /data/data_downstream_task/TUAB/processed_Raw \
+  --output-root /data/SAMBA-tmp/TUAB10 \
+  --workers 8
+```
+
+Use the Python 3.12 NeuralBench environment to check each additional source and
+batch schema before exporting it. For example, inspect HBN without writing the
+pretraining arrays:
 
 ```bash
 NEURALBENCH_CONFIG=/data/SAMBA-tmp/neuralbench-config.json \
@@ -199,7 +212,8 @@ python scripts/export_multicontext_data.py \
   --output-root /data/SAMBA-tmp/pretrain-v2 \
   --manifest-output /data/SAMBA-tmp/pretrain-v2/manifest.json \
   --workers 8 \
-  --check-only
+  --check-only \
+  --only 'HBN/resting/10s'
 ```
 
 After the check succeeds, remove `--check-only`. The export is resumable at the

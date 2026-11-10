@@ -9,6 +9,7 @@ from samba_eeg.data import (
     token_budget_batch_size,
 )
 from scripts.export_multicontext_data import extract_neural_batch
+from scripts.prepare_tuab_10s import stable_validation_groups
 from samba_eeg.losses import TimeFrequencyReconstructionLoss
 
 
@@ -88,3 +89,12 @@ def test_orthonormal_spectral_loss_is_comparable_across_lengths():
     long_loss = loss(long_prediction, long_target)
     assert torch.allclose(short_loss, torch.tensor(1.0), rtol=1e-6)
     assert torch.allclose(short_loss, long_loss, rtol=1e-6)
+
+
+def test_tuab_ssl_validation_groups_are_stable_and_disjoint():
+    groups = {f"subject-{index:03d}" for index in range(100)}
+    first = stable_validation_groups(groups, 0.05, 3407)
+    second = stable_validation_groups(groups, 0.05, 3407)
+    assert first == second
+    assert len(first) == 5
+    assert first < groups

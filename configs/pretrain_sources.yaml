@@ -46,16 +46,11 @@ sources:
   # Clinical long-context source. NeuralBench uses its subject-disjoint split;
   # only train and validation windows are exported.
   - name: TUAB/pathology/10s
-    provider: neuralbench
-    task: pathology
-    dataset: null
-    duration_seconds: 10
-    stride_seconds: 10
+    provider: prepared_npy
+    root: /data/SAMBA-tmp/TUAB10
+    static_positions: Montage/TUAB_16.xlsx
     task_family: clinical_resting
     device_family: TUH_clinical_EEG
-    max_train_hours: 300
-    max_val_hours: 20
-    export_batch_size: 32
     weight: 0.30
 
   # Large subject diversity and a dense clinical/developmental montage.
