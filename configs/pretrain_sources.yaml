@@ -9,7 +9,7 @@ sources:
     static_positions: Montage/Emotiv.xlsx
     task_family: resting_state
     device_family: Emotiv_EPOC_14ch
-    weight: 0.04
+    weight: 0.05
 
   - name: Emotiv/Attention/2s
     provider: prepared_npy
@@ -17,7 +17,7 @@ sources:
     static_positions: Montage/Emotiv.xlsx
     task_family: attention
     device_family: Emotiv_EPOC_14ch
-    weight: 0.04
+    weight: 0.05
 
   - name: Emotiv/Crowdsource/2s
     provider: prepared_npy
@@ -25,7 +25,7 @@ sources:
     static_positions: Montage/Emotiv.xlsx
     task_family: resting_state
     device_family: Emotiv_EPOC_family_14ch
-    weight: 0.04
+    weight: 0.05
 
   - name: Emotiv/DriverDistraction/2s
     provider: prepared_npy
@@ -33,7 +33,7 @@ sources:
     static_positions: Montage/Emotiv.xlsx
     task_family: sustained_attention
     device_family: Emotiv_EPOC_14ch
-    weight: 0.04
+    weight: 0.05
 
   - name: Emotiv/STEW/2s
     provider: prepared_npy
@@ -41,7 +41,7 @@ sources:
     static_positions: Montage/Emotiv.xlsx
     task_family: mental_workload
     device_family: Emotiv_EPOC_14ch
-    weight: 0.04
+    weight: 0.05
 
   # Recovered TUAB arrays. The directory is named 10s, but the surviving
   # arrays contain 256 samples and do not retain sampling-rate metadata.
@@ -53,7 +53,7 @@ sources:
     static_positions: Montage/TUAB_16.xlsx
     task_family: clinical_resting
     device_family: TUH_clinical_EEG
-    weight: 0.10
+    weight: 0.05
 
   # Long clinical context reconstructed from the raw EDF recordings. The
   # source TUAB train split is divided into fixed SSL train/validation groups.
@@ -66,55 +66,36 @@ sources:
     device_family: TUH_clinical_EEG
     weight: 0.20
 
-  # Large subject diversity and a dense clinical/developmental montage.
+  # Existing HBN resting-state EEGLAB files, read online without export.
   - name: HBN/resting/10s
-    provider: neuralbench
-    task: psychopathology
-    dataset: null
+    provider: raw_mne
+    root: /data/neuralbench_data/Shirazi2024Hbn
+    pattern: R9/download/sub-*/eeg/*task-RestingState_eeg.set
+    reader: eeglab
     duration_seconds: 10
-    stride_seconds: 10
     task_family: developmental_resting
     device_family: HBN_high_density_EEG
-    max_train_hours: 100
-    max_val_hours: 10
-    export_batch_size: 8
     weight: 0.20
 
-  # Continuous motor imagery gives a different task and a 64-channel device.
-  - name: Stieger/motor-imagery/4s
-    provider: neuralbench
-    task: motor_imagery
-    dataset: null
-    duration_seconds: 4
-    task_family: motor_imagery
-    device_family: research_64ch_EEG
-    max_train_hours: 100
-    max_val_hours: 10
-    export_batch_size: 32
-    weight: 0.15
-
-  # Frequency-coded BCI data adds strong oscillatory structure.
-  - name: Wang/SSVEP/4s
-    provider: neuralbench
-    task: ssvep
-    dataset: null
-    duration_seconds: 4
-    task_family: ssvep
-    device_family: research_64ch_EEG
-    max_train_hours: 40
-    max_val_hours: 5
-    export_batch_size: 32
+  # Existing four-channel Muse sleep-onset BrainVision recordings.
+  - name: Muse/sleep-onset/10s
+    provider: raw_mne
+    root: /data/neuralbench_data/Interaxon2026Muse
+    pattern: download/**/*.vhdr
+    reader: brainvision
+    fallback_montage: standard_1020
+    duration_seconds: 10
+    task_family: sleep_onset
+    device_family: Interaxon_Muse_4ch
     weight: 0.10
 
-  # Short ERP windows force preservation of sub-second temporal semantics.
-  - name: ERP-CORE/N170/1s
-    provider: neuralbench
-    task: n170
-    dataset: null
-    duration_seconds: 1
-    task_family: event_related_potential
-    device_family: ERP_CORE_30ch_EEG
-    max_train_hours: 10
-    max_val_hours: 2
-    export_batch_size: 128
-    weight: 0.05
+  # Existing 19-channel eyes-closed DICE EEGLAB recordings.
+  - name: DICE/eyes-closed/10s
+    provider: raw_mne
+    root: /data/neuralbench_data/Miltiadous2023Dice
+    pattern: download/sub-*/eeg/*task-eyesclosed_eeg.set
+    reader: eeglab
+    duration_seconds: 10
+    task_family: depression_resting
+    device_family: clinical_19ch_EEG
+    weight: 0.20

@@ -172,15 +172,15 @@ The initial diverse corpus recipe is in `configs/pretrain_sources.yaml`:
 - five 14-channel Emotiv tasks at 2 seconds;
 - recovered TUAB clinical EEG with 256 stored samples per window, plus newly
   materialized 100-second TUAB windows;
-- HBN resting-state EEG at 10 seconds;
-- Stieger motor imagery and Wang SSVEP at 4 seconds;
-- ERP CORE N170 at 1 second.
+- 129-channel HBN resting-state EEG at 10 seconds;
+- four-channel Muse sleep-onset EEG at 10 seconds;
+- 19-channel DICE eyes-closed clinical EEG at 10 seconds.
 
-NeuralBench subject splits are used to locate the data, but only its training
-split is eligible for export. A fixed subset of those training windows becomes
-the self-supervised validation set. NeuralBench validation and test examples are
-not read by pretraining. Source weights are explicit, so HBN or TUAB cannot
-dominate simply because they contain more recordings.
+HBN, Muse, and DICE are read directly from their existing EEGLAB or BrainVision
+recordings. Subjects are assigned to fixed self-supervised train and validation
+splits. No persistent copy or NeuralBench cache is generated. Source weights
+are explicit, so HBN or TUAB cannot dominate simply because it contains more
+recordings.
 
 Prepare the five recovered Emotiv sources first:
 
@@ -219,12 +219,10 @@ python scripts/prepare_tuab_100s.py \
   --workers 8
 ```
 
-Use the Python 3.12 NeuralBench environment to check each additional source and
-batch schema before exporting it. For example, inspect HBN without writing the
-pretraining arrays:
+Use the MNE-enabled environment to inspect each raw source. This reads headers
+only and writes no EEG array:
 
 ```bash
-NEURALBENCH_CONFIG=/data/SAMBA-tmp/neuralbench-config.json \
 python scripts/export_multicontext_data.py \
   --config configs/pretrain_sources.yaml \
   --output-root /data/SAMBA-tmp/pretrain-v2 \
@@ -235,9 +233,9 @@ python scripts/export_multicontext_data.py \
 ```
 
 After the check succeeds, remove `--check-only`. The export is resumable at the
-source/split level and writes the final manifest only after all sources finish.
-It caps large sources by hours to keep the prepared corpus within a controlled
-disk budget.
+source/split level and writes only the lightweight manifest. Existing prepared
+arrays are referenced in place. Raw recordings are indexed by path, subject,
+window count, channel positions, size, and modification time.
 
 Run a small single-GPU integration test in the SAMBA Mamba environment:
 
@@ -259,9 +257,11 @@ CUDA_VISIBLE_DEVICES=0 python scripts/train_samba.py \
 ```
 
 The loader uses no more than 24 workers in total, with pinned memory and
-prefetching. Resampling, filtering, normalization, and coordinate extraction are
-completed before training. Validation uses fixed windows and a fixed masking
-seed, so checkpoint selection is comparable across epochs.
+prefetching. Raw sources are resampled, filtered, and normalized online. Each
+worker caches its current recording in memory and batches never cross recording
+boundaries, avoiding repeated file opens without creating a disk copy.
+Validation uses fixed windows and a fixed masking seed, so checkpoint selection
+is comparable across epochs.
 
 The previous `configs/samba.yaml` command remains available to inspect the
 256-sample pilot checkpoint. The multi-context run may reuse the same recovered

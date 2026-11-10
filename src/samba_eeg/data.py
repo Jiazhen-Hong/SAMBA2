@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import bisect
 import json
+import math
+import random
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 
 
 class NpyWindowDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
@@ -202,6 +206,182 @@ class PositionedNpyWindowDataset(
             )
             for row in range(len(indices))
         ]
+
+
+def read_mne_recording(path: str | Path, reader: str):
+    """Open one supported existing EEG recording without preloading it."""
+    import mne
+
+    path = str(path)
+    readers = {
+        "eeglab": mne.io.read_raw_eeglab,
+        "brainvision": mne.io.read_raw_brainvision,
+        "edf": mne.io.read_raw_edf,
+    }
+    if reader not in readers:
+        raise ValueError(f"unsupported MNE reader: {reader}")
+    return readers[reader](path, preload=False, verbose="ERROR")
+
+
+class RawMneWindowDataset(
+    Dataset[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
+):
+    """Zero-copy windows from existing EEGLAB, BrainVision, or EDF recordings.
+
+    One fully filtered and resampled recording is cached per DataLoader worker.
+    Recording-grouped batches therefore avoid reopening a raw file for every
+    window while still creating no persistent EEG copy.
+    """
+
+    def __init__(self, source: dict[str, Any], split: str) -> None:
+        self.reader = str(source["reader"])
+        self.target_rate = int(source["sample_rate"])
+        self.window_samples = int(source["window_samples"])
+        self.channel_names = [str(name) for name in source["channel_names"]]
+        positions = np.asarray(source["channel_positions"], dtype=np.float32)
+        if positions.shape != (len(self.channel_names), 3):
+            raise ValueError(
+                f"raw positions must be [C, 3], got {positions.shape}"
+            )
+        if not np.isfinite(positions).all():
+            raise ValueError("raw channel positions must be finite")
+        self._positions = torch.from_numpy(positions.copy())
+        self.records = list(source["splits"][split]["recordings"])
+        if not self.records:
+            raise ValueError(f"raw source has no {split} recordings")
+        self._stops = []
+        offset = 0
+        self.record_ranges = []
+        for record in self.records:
+            path = Path(record["path"])
+            stat = path.stat()
+            if stat.st_size != int(record["size_bytes"]):
+                raise ValueError(f"raw recording size changed: {path}")
+            if stat.st_mtime_ns != int(record["mtime_ns"]):
+                raise ValueError(f"raw recording modification time changed: {path}")
+            count = int(record["windows"])
+            if count < 1:
+                raise ValueError(f"raw recording contains no full windows: {path}")
+            self.record_ranges.append((offset, offset + count))
+            offset += count
+            self._stops.append(offset)
+        self._length = offset
+        self._cached_record = None
+        self._cached_windows = None
+        self._cached_masks = None
+
+    @property
+    def channels(self) -> int:
+        return len(self.channel_names)
+
+    def __len__(self) -> int:
+        return self._length
+
+    def locate(self, index: int) -> tuple[int, int]:
+        if index < 0:
+            index += self._length
+        if not 0 <= index < self._length:
+            raise IndexError(index)
+        record_index = bisect.bisect_right(self._stops, index)
+        start = 0 if record_index == 0 else self._stops[record_index - 1]
+        return record_index, index - start
+
+    def _load_recording(self, record_index: int) -> None:
+        if self._cached_record == record_index:
+            return
+        from scipy.signal import butter, resample_poly, sosfiltfilt
+
+        record = self.records[record_index]
+        raw = read_mne_recording(record["path"], self.reader)
+        if any(name not in raw.ch_names for name in self.channel_names):
+            missing = [name for name in self.channel_names if name not in raw.ch_names]
+            raise ValueError(f"{record['path']} is missing {missing}")
+        signals = raw.get_data(picks=self.channel_names).astype(np.float32, copy=False)
+        source_rate = float(raw.info["sfreq"])
+        if not np.isclose(source_rate, self.target_rate):
+            ratio = Fraction(self.target_rate / source_rate).limit_denominator(1000)
+            signals = resample_poly(
+                signals, ratio.numerator, ratio.denominator, axis=-1
+            ).astype(np.float32, copy=False)
+        sos = butter(
+            4, [0.5, 45.0], btype="bandpass", fs=self.target_rate, output="sos"
+        )
+        signals = sosfiltfilt(sos, signals, axis=-1).astype(np.float32, copy=False)
+        count = int(record["windows"])
+        required = count * self.window_samples
+        if signals.shape[-1] < required:
+            raise ValueError(
+                f"{record['path']} yielded {signals.shape[-1]} samples; need {required}"
+            )
+        windows = signals[:, :required].reshape(
+            self.channels, count, self.window_samples
+        )
+        windows = np.transpose(windows, (1, 0, 2)).copy()
+        scale = np.quantile(np.abs(windows), 0.95, axis=-1).astype(np.float32)
+        masks = np.isfinite(windows).all(axis=-1) & (scale > 1e-8)
+        windows = np.nan_to_num(windows)
+        windows /= np.where(masks, scale, 1.0)[..., None]
+        windows[~masks] = 0.0
+        if not masks.any(axis=1).all():
+            raise ValueError(f"{record['path']} contains an empty EEG window")
+        self._cached_record = record_index
+        self._cached_windows = windows.astype(np.float32, copy=False)
+        self._cached_masks = masks
+
+    def __getitem__(
+        self, index: int
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        record_index, local_index = self.locate(index)
+        self._load_recording(record_index)
+        return (
+            torch.from_numpy(self._cached_windows[local_index].copy()),
+            torch.from_numpy(self._cached_masks[local_index].copy()),
+            self._positions,
+        )
+
+    def __getitems__(
+        self, indices: list[int]
+    ) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+        return [self[index] for index in indices]
+
+
+class RecordingBatchSampler(Sampler[list[int]]):
+    """Shuffle recordings while keeping each raw-file batch contiguous."""
+
+    def __init__(
+        self,
+        record_ranges: list[tuple[int, int]],
+        batch_size: int,
+        *,
+        shuffle: bool,
+        seed: int,
+    ) -> None:
+        self.record_ranges = list(record_ranges)
+        self.batch_size = int(batch_size)
+        self.shuffle = bool(shuffle)
+        self.seed = int(seed)
+        self.iteration = 0
+        if self.batch_size < 1:
+            raise ValueError("batch_size must be positive")
+
+    def __iter__(self):
+        rng = random.Random(self.seed + self.iteration)
+        self.iteration += 1
+        ranges = list(self.record_ranges)
+        if self.shuffle:
+            rng.shuffle(ranges)
+        for start, stop in ranges:
+            indices = list(range(start, stop))
+            if self.shuffle:
+                rng.shuffle(indices)
+            for offset in range(0, len(indices), self.batch_size):
+                yield indices[offset : offset + self.batch_size]
+
+    def __len__(self) -> int:
+        return sum(
+            math.ceil((stop - start) / self.batch_size)
+            for start, stop in self.record_ranges
+        )
 
 
 def token_budget_batch_size(

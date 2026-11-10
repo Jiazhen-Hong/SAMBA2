@@ -52,6 +52,6 @@ def test_pretrain_source_weights_cover_temporal_task_and_device_diversity():
     sources = config["sources"]
     assert abs(sum(float(source["weight"]) for source in sources) - 1.0) < 1e-8
     durations = {float(source.get("duration_seconds", 2.0)) for source in sources}
-    assert {1.0, 2.0, 4.0, 10.0, 100.0}.issubset(durations)
+    assert {2.0, 10.0, 100.0}.issubset(durations)
     assert len({source["task_family"] for source in sources}) >= 7
     assert len({source["device_family"] for source in sources}) >= 5

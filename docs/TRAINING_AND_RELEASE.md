@@ -29,10 +29,11 @@ proportional to temporal length, which keeps the approximate number of processed
 time points constant without padding short signals to the longest duration.
 
 The multi-context recipe includes Alpha, Attention, Crowdsource,
-DriverDistraction, STEW, TUAB, HBN resting state, Stieger motor imagery, Wang
-SSVEP, and ERP CORE N170. The recipe records explicit source weights, task
-families, device families, temporal lengths, and data caps. NeuralBench
-validation and test splits are excluded from self-supervised pretraining.
+DriverDistraction, STEW, recovered TUAB windows, TUAB100, HBN resting state,
+Muse sleep-onset EEG, and DICE eyes-closed EEG. The recipe records explicit
+source weights, task families, device families, and temporal lengths. Raw
+sources use deterministic subject-disjoint self-supervised splits and are read
+online without persistent duplication.
 
 All Emotiv sources are normalized per window and channel by the absolute 95th percentile. Constant or nonfinite channels are zeroed and marked invalid in the channel mask. The recovered TUAB arrays already use the same scale rule.
 

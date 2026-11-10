@@ -5,6 +5,8 @@ import torch
 
 from samba_eeg.data import (
     PositionedNpyWindowDataset,
+    RawMneWindowDataset,
+    RecordingBatchSampler,
     load_pretrain_manifest,
     token_budget_batch_size,
 )
@@ -120,3 +122,59 @@ def test_tuab100_ssl_validation_groups_are_stable():
     assert first == second
     assert len(first) == 5
     assert first < groups
+
+
+def test_recording_batch_sampler_never_crosses_recordings():
+    sampler = RecordingBatchSampler(
+        [(0, 3), (3, 8)], batch_size=2, shuffle=True, seed=7
+    )
+    batches = list(sampler)
+    assert sorted(index for batch in batches for index in batch) == list(range(8))
+    assert all(not (set(batch) & {0, 1, 2} and set(batch) & {3, 4, 5, 6, 7}) for batch in batches)
+
+
+def test_raw_mne_dataset_caches_and_normalizes_recording(tmp_path, monkeypatch):
+    path = tmp_path / "recording.set"
+    path.write_bytes(b"raw")
+
+    class FakeRaw:
+        ch_names = ["A", "B"]
+        info = {"sfreq": 128.0}
+
+        def get_data(self, picks):
+            time = np.linspace(0, 4 * np.pi, 256, dtype=np.float32)
+            return np.stack([np.sin(time), np.cos(time)])
+
+    calls = []
+
+    def fake_reader(raw_path, reader):
+        calls.append((raw_path, reader))
+        return FakeRaw()
+
+    monkeypatch.setattr("samba_eeg.data.read_mne_recording", fake_reader)
+    stat = path.stat()
+    source = {
+        "reader": "eeglab",
+        "sample_rate": 128,
+        "window_samples": 128,
+        "channel_names": ["A", "B"],
+        "channel_positions": [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0]],
+        "splits": {
+            "train": {
+                "recordings": [
+                    {
+                        "path": str(path),
+                        "windows": 2,
+                        "size_bytes": stat.st_size,
+                        "mtime_ns": stat.st_mtime_ns,
+                    }
+                ]
+            }
+        },
+    }
+    dataset = RawMneWindowDataset(source, "train")
+    first, second = dataset.__getitems__([0, 1])
+    assert len(calls) == 1
+    assert first[0].shape == (2, 128)
+    assert second[1].all()
+    assert first[2].shape == (2, 3)

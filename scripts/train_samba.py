@@ -24,6 +24,8 @@ from samba_eeg import (
 )
 from samba_eeg.data import (
     PositionedNpyWindowDataset,
+    RawMneWindowDataset,
+    RecordingBatchSampler,
     load_pretrain_manifest,
     token_budget_batch_size,
 )
@@ -165,6 +167,38 @@ def make_manifest_loaders(
     workers = min(workers, max_total_workers // max(1, len(manifest["sources"])))
     for offset, source in enumerate(manifest["sources"]):
         entry = source["splits"][split]
+        if source.get("provider") == "raw_mne":
+            dataset = RawMneWindowDataset(source, split)
+            declared_samples = int(source["window_samples"])
+            if dataset.window_samples != declared_samples:
+                raise ValueError(
+                    f"{source['name']} declares {declared_samples} samples but "
+                    f"contains {dataset.window_samples}"
+                )
+            batch_size = token_budget_batch_size(
+                dataset.window_samples,
+                reference_samples=reference_samples,
+                reference_batch_size=reference_batch_size,
+            )
+            sampler = RecordingBatchSampler(
+                dataset.record_ranges,
+                batch_size,
+                shuffle=split == "train",
+                seed=seed + offset,
+            )
+            raw_workers = workers if split == "train" else 0
+            loaders[source["name"]] = DataLoader(
+                dataset,
+                batch_sampler=sampler,
+                num_workers=raw_workers,
+                pin_memory=True,
+                persistent_workers=raw_workers > 0,
+                prefetch_factor=(
+                    prefetch_factor if split == "train" and raw_workers > 0 else None
+                ),
+            )
+            batch_sizes[source["name"]] = batch_size
+            continue
         static_positions = None
         positions_path = None
         if source.get("static_positions"):

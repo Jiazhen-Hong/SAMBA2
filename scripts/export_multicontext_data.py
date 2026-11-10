@@ -1,15 +1,16 @@
-"""Export train/validation EEG windows into SAMBA's multi-context format.
+"""Build SAMBA's multi-context manifest from existing local EEG sources.
 
-NeuralBench supplies subject-disjoint splits, preprocessing, channel positions,
-and access to many heterogeneous datasets.  This exporter keeps only train and
-validation windows, applies SAMBA's per-window/channel absolute-q95 scaling, and
-writes memory-mapped arrays for fast pretraining.  Test windows are never read.
+Prepared arrays are referenced in place. Raw MNE-compatible recordings are
+indexed by subject and read online during training. No raw-source EEG copy is
+written. Test windows are never read.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import math
 import os
 from collections.abc import Mapping
 from pathlib import Path
@@ -260,6 +261,153 @@ def add_direct_npy_source(source: dict) -> dict:
     }
 
 
+def stable_validation_subjects(
+    subjects: set[str], fraction: float, seed: int
+) -> set[str]:
+    ordered = sorted(
+        subjects,
+        key=lambda value: hashlib.sha256(f"{seed}:{value}".encode()).digest(),
+    )
+    count = max(1, int(round(len(ordered) * fraction)))
+    return set(ordered[:count])
+
+
+def subject_from_path(path: Path) -> str:
+    for part in path.parts:
+        if part.startswith("sub-"):
+            return part
+    raise ValueError(f"cannot identify BIDS subject in {path}")
+
+
+def open_raw_header(path: Path, reader: str):
+    import mne
+
+    readers = {
+        "eeglab": mne.io.read_raw_eeglab,
+        "brainvision": mne.io.read_raw_brainvision,
+        "edf": mne.io.read_raw_edf,
+    }
+    if reader not in readers:
+        raise ValueError(f"unsupported raw reader: {reader}")
+    return readers[reader](path, preload=False, verbose="ERROR")
+
+
+def raw_channel_positions(raw, channel_names: list[str], fallback: str | None) -> list:
+    import mne
+
+    montage = raw.get_montage()
+    positioned = {} if montage is None else montage.get_positions()["ch_pos"]
+    if any(name not in positioned for name in channel_names):
+        if fallback is None:
+            missing = [name for name in channel_names if name not in positioned]
+            raise ValueError(f"raw recording has no positions for {missing}")
+        raw.set_montage(
+            mne.channels.make_standard_montage(fallback), on_missing="raise"
+        )
+        positioned = raw.get_montage().get_positions()["ch_pos"]
+    values = np.asarray([positioned[name] for name in channel_names], dtype=np.float32)
+    if values.shape != (len(channel_names), 3) or not np.isfinite(values).all():
+        raise ValueError("invalid raw EEG channel positions")
+    return values.tolist()
+
+
+def add_raw_mne_source(source: dict, check_only: bool = False) -> dict:
+    root = Path(source["root"]).expanduser()
+    paths = sorted(root.glob(source["pattern"]))
+    if not paths:
+        raise FileNotFoundError(f"no files matching {root / source['pattern']}")
+    reader = str(source["reader"])
+    target_rate = int(source.get("sample_rate", 128))
+    window_samples = int(round(float(source["duration_seconds"]) * target_rate))
+    first = open_raw_header(paths[0], reader)
+    eeg_indices = [
+        index
+        for index, kind in enumerate(first.get_channel_types())
+        if kind == "eeg"
+    ]
+    channel_names = [first.ch_names[index] for index in eeg_indices]
+    if not channel_names:
+        raise ValueError(f"{paths[0]} has no EEG channels")
+    positions = raw_channel_positions(
+        first, channel_names, source.get("fallback_montage")
+    )
+
+    rows = []
+    for number, path in enumerate(paths, start=1):
+        raw = open_raw_header(path, reader)
+        names = [
+            raw.ch_names[index]
+            for index, kind in enumerate(raw.get_channel_types())
+            if kind == "eeg"
+        ]
+        if names != channel_names:
+            raise ValueError(
+                f"channel layout differs in {path}: {names} versus {channel_names}"
+            )
+        windows = math.floor(
+            raw.n_times * target_rate / float(raw.info["sfreq"]) / window_samples
+        )
+        if windows < 1:
+            continue
+        stat = path.stat()
+        rows.append(
+            {
+                "path": str(path.resolve()),
+                "subject": subject_from_path(path),
+                "windows": windows,
+                "size_bytes": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+            }
+        )
+        if number % 100 == 0:
+            print(f"{source['name']}: indexed {number}/{len(paths)}", flush=True)
+    subjects = {row["subject"] for row in rows}
+    validation = stable_validation_subjects(
+        subjects,
+        float(source.get("validation_fraction", 0.05)),
+        int(source.get("seed", 3407)),
+    )
+    splits = {
+        split: {
+            "recordings": [
+                row
+                for row in rows
+                if (row["subject"] in validation) == (split == "val")
+            ]
+        }
+        for split in ("train", "val")
+    }
+    result = {
+        "name": source["name"],
+        "weight": float(source["weight"]),
+        "provider": "raw_mne",
+        "reader": reader,
+        "sample_rate": target_rate,
+        "window_samples": window_samples,
+        "channel_names": channel_names,
+        "channel_positions": positions,
+        "task_family": source["task_family"],
+        "device_family": source["device_family"],
+        "preprocessing": "online resample 128 Hz, bandpass 0.5-45 Hz, abs-q95",
+        "splits": splits,
+    }
+    if check_only:
+        counts = {
+            split: {
+                "subjects": len({row["subject"] for row in entry["recordings"]}),
+                "recordings": len(entry["recordings"]),
+                "windows": sum(row["windows"] for row in entry["recordings"]),
+            }
+            for split, entry in splits.items()
+        }
+        print(
+            f"{source['name']}: channels={len(channel_names)} "
+            f"window_samples={window_samples} splits={json.dumps(counts)}",
+            flush=True,
+        )
+    return result
+
+
 def add_neuralbench_source(
     source: dict, output_root: Path, workers: int, check_only: bool = False
 ) -> dict | None:
@@ -402,6 +550,10 @@ def main() -> None:
                 print(f"{source['name']}: signals={shape} direct", flush=True)
             else:
                 sources.append(direct)
+        elif provider == "raw_mne":
+            raw_source = add_raw_mne_source(source, check_only=args.check_only)
+            if not args.check_only:
+                sources.append(raw_source)
         elif provider == "neuralbench":
             exported = add_neuralbench_source(
                 source, args.output_root, args.workers, check_only=args.check_only
@@ -423,11 +575,12 @@ def main() -> None:
         "format": FORMAT,
         "sampling_rate": 128,
         "normalization": "per_window_per_channel_abs_q95",
-        "split_policy": "NeuralBench train split only; fixed window-disjoint SSL train/val; downstream val/test excluded",
+        "split_policy": "Existing prepared splits or fixed subject-disjoint raw SSL train/val splits",
         "sources": sources,
         "limitations": [
             "NeuralBench validation and test splits are excluded from self-supervised pretraining.",
             "Recovered TUAB arrays contain 256 samples per window, but their physical duration cannot be verified from surviving metadata.",
+            "Raw MNE sources are filtered and resampled online and create no persistent EEG copy.",
             "Dataset overlap must be disclosed when evaluating an in-domain downstream task.",
         ],
     }
