@@ -21,9 +21,18 @@ The rebuilt pipeline may jointly train on verified Emotiv and TUAB sources. Ever
 
 A directory name is not accepted as duration metadata. In particular, the recovered `TUAB_16ch_10s` arrays have 256 samples per window, but the surviving files do not yet verify that these samples represent 10 seconds.
 
-Sources with different montages or lengths use homogeneous microbatches. They are mapped to a shared coordinate-driven reconstruction space before the reconstruction objective is evaluated. Downstream encoding remains channel and length flexible.
+Sources with different montages or lengths use homogeneous source-duration
+microbatches. They are mapped to a shared coordinate-driven reconstruction space
+before the reconstruction objective is evaluated. Different buckets accumulate
+gradients in the same optimizer step. The physical batch size is inversely
+proportional to temporal length, which keeps the approximate number of processed
+time points constant without padding short signals to the longest duration.
 
-The current pipeline includes Alpha, Attention, Crowdsource, DriverDistraction, STEW, and TUAB. DREAMER is excluded because its recovered array contains systematic constant channels. Emotiv and TUAB each receive 50% of source sampling probability. Within the Emotiv half, the five datasets are sampled equally.
+The multi-context recipe includes Alpha, Attention, Crowdsource,
+DriverDistraction, STEW, TUAB, HBN resting state, Stieger motor imagery, Wang
+SSVEP, and ERP CORE N170. The recipe records explicit source weights, task
+families, device families, temporal lengths, and data caps. NeuralBench
+validation and test splits are excluded from self-supervised pretraining.
 
 All Emotiv sources are normalized per window and channel by the absolute 95th percentile. Constant or nonfinite channels are zeroed and marked invalid in the channel mask. The recovered TUAB arrays already use the same scale rule.
 

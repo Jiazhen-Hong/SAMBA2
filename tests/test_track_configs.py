@@ -35,3 +35,23 @@ def test_dreamer_is_excluded_and_driver_uses_subject_ids():
     assert "DREAMER" in emotiv["excluded_datasets"]
     assert emotiv["driver_distraction_source"] == "DriverDistraction_X.npy"
     assert emotiv["split_policy"] == "subject_wise"
+
+
+def test_multicontext_recipe_uses_a_constant_temporal_budget():
+    recipe = yaml.safe_load(Path("configs/samba_multicontext.yaml").read_text())
+    training = recipe["training"]
+    assert recipe["status"] == "multi_context_v2"
+    assert training["reference_window_samples"] == 256
+    assert training["max_total_workers"] <= 24
+    assert training["fixed_validation_mask"] is True
+    assert recipe["data"]["cross_bucket_training"] == "gradient_accumulation"
+
+
+def test_pretrain_source_weights_cover_temporal_task_and_device_diversity():
+    config = yaml.safe_load(Path("configs/pretrain_sources.yaml").read_text())
+    sources = config["sources"]
+    assert abs(sum(float(source["weight"]) for source in sources) - 1.0) < 1e-8
+    durations = {float(source.get("duration_seconds", 2.0)) for source in sources}
+    assert {1.0, 2.0, 4.0, 10.0}.issubset(durations)
+    assert len({source["task_family"] for source in sources}) >= 7
+    assert len({source["device_family"] for source in sources}) >= 5

@@ -1,0 +1,112 @@
+sampling_rate: 128
+
+# Weights apply to source-duration buckets, not individual windows. Long sources
+# therefore cannot dominate merely because they contain more recordings.
+sources:
+  - name: Emotiv/Alpha/2s
+    provider: prepared_npy
+    root: /data/SAMBA-tmp/Emotiv/Alpha
+    static_positions: Montage/Emotiv.xlsx
+    task_family: resting_state
+    device_family: Emotiv_EPOC_14ch
+    weight: 0.04
+
+  - name: Emotiv/Attention/2s
+    provider: prepared_npy
+    root: /data/SAMBA-tmp/Emotiv/Attention
+    static_positions: Montage/Emotiv.xlsx
+    task_family: attention
+    device_family: Emotiv_EPOC_14ch
+    weight: 0.04
+
+  - name: Emotiv/Crowdsource/2s
+    provider: prepared_npy
+    root: /data/SAMBA-tmp/Emotiv/Crowdsource
+    static_positions: Montage/Emotiv.xlsx
+    task_family: resting_state
+    device_family: Emotiv_EPOC_family_14ch
+    weight: 0.04
+
+  - name: Emotiv/DriverDistraction/2s
+    provider: prepared_npy
+    root: /data/SAMBA-tmp/Emotiv/DriverDistraction
+    static_positions: Montage/Emotiv.xlsx
+    task_family: sustained_attention
+    device_family: Emotiv_EPOC_14ch
+    weight: 0.04
+
+  - name: Emotiv/STEW/2s
+    provider: prepared_npy
+    root: /data/SAMBA-tmp/Emotiv/STEW
+    static_positions: Montage/Emotiv.xlsx
+    task_family: mental_workload
+    device_family: Emotiv_EPOC_14ch
+    weight: 0.04
+
+  # Clinical long-context source. NeuralBench uses its subject-disjoint split;
+  # only train and validation windows are exported.
+  - name: TUAB/pathology/10s
+    provider: neuralbench
+    task: pathology
+    dataset: null
+    duration_seconds: 10
+    stride_seconds: 10
+    task_family: clinical_resting
+    device_family: TUH_clinical_EEG
+    max_train_hours: 300
+    max_val_hours: 20
+    export_batch_size: 32
+    weight: 0.30
+
+  # Large subject diversity and a dense clinical/developmental montage.
+  - name: HBN/resting/10s
+    provider: neuralbench
+    task: psychopathology
+    dataset: null
+    duration_seconds: 10
+    stride_seconds: 10
+    task_family: developmental_resting
+    device_family: HBN_high_density_EEG
+    max_train_hours: 100
+    max_val_hours: 10
+    export_batch_size: 8
+    weight: 0.20
+
+  # Continuous motor imagery gives a different task and a 64-channel device.
+  - name: Stieger/motor-imagery/4s
+    provider: neuralbench
+    task: motor_imagery
+    dataset: null
+    duration_seconds: 4
+    task_family: motor_imagery
+    device_family: research_64ch_EEG
+    max_train_hours: 100
+    max_val_hours: 10
+    export_batch_size: 32
+    weight: 0.15
+
+  # Frequency-coded BCI data adds strong oscillatory structure.
+  - name: Wang/SSVEP/4s
+    provider: neuralbench
+    task: ssvep
+    dataset: null
+    duration_seconds: 4
+    task_family: ssvep
+    device_family: research_64ch_EEG
+    max_train_hours: 40
+    max_val_hours: 5
+    export_batch_size: 32
+    weight: 0.10
+
+  # Short ERP windows force preservation of sub-second temporal semantics.
+  - name: ERP-CORE/N170/1s
+    provider: neuralbench
+    task: n170
+    dataset: null
+    duration_seconds: 1
+    task_family: event_related_potential
+    device_family: ERP_CORE_30ch_EEG
+    max_train_hours: 10
+    max_val_hours: 2
+    export_batch_size: 128
+    weight: 0.05

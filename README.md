@@ -155,9 +155,33 @@ python scripts/evaluate_neuralbench.py path/to/SAMBA \
   --no-download
 ```
 
-### Rebuilt training pipeline
+### Multi-context pretraining pipeline
 
-Prepare the five verified Emotiv sources. This creates normalized float32 arrays and channel masks under `/data/SAMBA-tmp/Emotiv`. DREAMER is excluded. Existing 256-sample TUAB arrays from `TUAB_16ch_10s` are memory mapped directly and are not copied. The rebuilt pipeline does not generate or require TUAB100.
+The current pipeline trains short and long windows in one run without padding
+every sample to the longest duration. Each source-duration pair is a homogeneous
+bucket. Buckets may have different montages and may provide one coordinate set
+per source or per recording. Gradient accumulation mixes buckets within an
+optimizer step. A fixed temporal budget automatically changes the physical
+batch size: with the default settings, 2-second windows use 256 examples,
+4-second windows use 128, 10-second windows use 51, and 100-second windows use
+5. This keeps long windows from exhausting memory and avoids wasting compute on
+padding.
+
+The initial diverse corpus recipe is in `configs/pretrain_sources.yaml`:
+
+- five 14-channel Emotiv tasks at 2 seconds;
+- TUAB clinical EEG at 10 seconds;
+- HBN resting-state EEG at 10 seconds;
+- Stieger motor imagery and Wang SSVEP at 4 seconds;
+- ERP CORE N170 at 1 second.
+
+NeuralBench subject splits are used to locate the data, but only its training
+split is eligible for export. A fixed subset of those training windows becomes
+the self-supervised validation set. NeuralBench validation and test examples are
+not read by pretraining. Source weights are explicit, so HBN or TUAB cannot
+dominate simply because they contain more recordings.
+
+Prepare the five recovered Emotiv sources first:
 
 ```bash
 python scripts/prepare_samba_data.py \
@@ -165,15 +189,31 @@ python scripts/prepare_samba_data.py \
   --output-root /data/SAMBA-tmp/Emotiv
 ```
 
-Run a small single-GPU integration test:
+Use the Python 3.12 NeuralBench environment to check the selected raw sources
+and batch schema before writing arrays:
+
+```bash
+NEURALBENCH_CONFIG=/data/SAMBA-tmp/neuralbench-config.json \
+python scripts/export_multicontext_data.py \
+  --config configs/pretrain_sources.yaml \
+  --output-root /data/SAMBA-tmp/pretrain-v2 \
+  --manifest-output /data/SAMBA-tmp/pretrain-v2/manifest.json \
+  --workers 8 \
+  --check-only
+```
+
+After the check succeeds, remove `--check-only`. The export is resumable at the
+source/split level and writes the final manifest only after all sources finish.
+It caps large sources by hours to keep the prepared corpus within a controlled
+disk budget.
+
+Run a small single-GPU integration test in the SAMBA Mamba environment:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python scripts/train_samba.py \
-  --config configs/samba.yaml \
-  --emotiv-root /data/SAMBA-tmp/Emotiv \
-  --tuab-root /data/data_downstream_task/TUAB/TUAB_16ch_10s \
+  --config configs/samba_multicontext.yaml \
+  --manifest /data/SAMBA-tmp/pretrain-v2/manifest.json \
   --output-root checkpoints/SAMBA/smoke-test \
-  --micro-batch-size 32 \
   --smoke-test
 ```
 
@@ -181,15 +221,19 @@ Then start the full run in `tmux`:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python scripts/train_samba.py \
-  --config configs/samba.yaml \
-  --emotiv-root /data/SAMBA-tmp/Emotiv \
-  --tuab-root /data/data_downstream_task/TUAB/TUAB_16ch_10s \
-  --output-root checkpoints/SAMBA/run-001
+  --config configs/samba_multicontext.yaml \
+  --manifest /data/SAMBA-tmp/pretrain-v2/manifest.json \
+  --output-root checkpoints/SAMBA/multicontext-001
 ```
 
-The default physical batch is 256 with four-step gradient accumulation, giving an effective batch of 1,024. Source selection is 50% TUAB and 50% across the five Emotiv datasets. Temporary prepared data remain under `/data/SAMBA-tmp`, while checkpoints are written under the user's repository directory. `last.pt` is updated every epoch, and periodic snapshots are retained every 50 epochs to limit storage use.
+The loader uses no more than 24 workers in total, with pinned memory and
+prefetching. Resampling, filtering, normalization, and coordinate extraction are
+completed before training. Validation uses fixed windows and a fixed masking
+seed, so checkpoint selection is comparable across epochs.
 
-The default loader uses two persistent workers for each of six sources, for 12 workers total, with pinned memory and four-batch prefetching. Temporal Semantic Random Masking is vectorized on the GPU. Normalization and resampling are never performed inside the training loop.
+The previous `configs/samba.yaml` command remains available only to inspect the
+256-sample pilot checkpoint. Its recovered directory name did not verify a
+10-second TUAB duration and it should not be used for the new multi-context run.
 
 On shared systems with limited `/dev/shm`, pass `--workers-per-source 0`. The dataset implements vectorized batch reads, so this mode avoids multiprocessing shared memory without returning to slow per-sample disk access.
 

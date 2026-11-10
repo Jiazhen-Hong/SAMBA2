@@ -1,4 +1,4 @@
-"""Train the single rebuilt SAMBA checkpoint on Emotiv and recovered TUAB windows."""
+"""Train SAMBA on source-homogeneous, duration-bucketed EEG windows."""
 
 from __future__ import annotations
 
@@ -16,7 +16,17 @@ import torch
 import yaml
 from torch.utils.data import DataLoader
 
-from samba_eeg import NpyWindowDataset, SambaConfig, SambaModel, temporal_semantic_random_mask
+from samba_eeg import (
+    NpyWindowDataset,
+    SambaConfig,
+    SambaModel,
+    temporal_semantic_random_mask,
+)
+from samba_eeg.data import (
+    PositionedNpyWindowDataset,
+    load_pretrain_manifest,
+    token_budget_batch_size,
+)
 from samba_eeg.losses import TimeFrequencyReconstructionLoss
 
 
@@ -49,6 +59,15 @@ def file_identity(path: Path) -> dict:
     }
 
 
+def plain_file_identity(path: Path) -> dict:
+    stat = path.stat()
+    return {
+        "path": str(path.resolve()),
+        "size_bytes": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+
+
 def combined_manifest_hash(recipe: dict, emotiv_metadata: dict, tuab_root: Path) -> tuple[str, dict]:
     tuab_identity = {
         split: file_identity(tuab_root / f"{split}_data.npy")
@@ -61,6 +80,38 @@ def combined_manifest_hash(recipe: dict, emotiv_metadata: dict, tuab_root: Path)
     }
     canonical = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(canonical).hexdigest(), tuab_identity
+
+
+def resolve_data_path(value: str, manifest_path: Path, repository: Path) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    manifest_relative = manifest_path.parent / path
+    return manifest_relative if manifest_relative.exists() else repository / path
+
+
+def multi_context_manifest_hash(
+    recipe: dict, manifest: dict, manifest_path: Path, repository: Path
+) -> tuple[str, dict]:
+    identities = {}
+    for source in manifest["sources"]:
+        source_identity = {}
+        if source.get("static_positions"):
+            source_identity["static_positions"] = plain_file_identity(
+                resolve_data_path(source["static_positions"], manifest_path, repository)
+            )
+        for split in ("train", "val"):
+            entry = source["splits"][split]
+            split_identity = {}
+            for key in ("signals", "channel_mask", "channel_positions"):
+                if entry.get(key):
+                    path = resolve_data_path(entry[key], manifest_path, repository)
+                    split_identity[key] = file_identity(path)
+            source_identity[split] = split_identity
+        identities[source["name"]] = source_identity
+    identity = {"recipe": recipe, "manifest": manifest, "files": identities}
+    canonical = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(canonical).hexdigest(), identities
 
 
 def make_loaders(
@@ -97,6 +148,75 @@ def make_loaders(
     return loaders
 
 
+def make_manifest_loaders(
+    manifest: dict,
+    manifest_path: Path,
+    repository: Path,
+    split: str,
+    reference_batch_size: int,
+    reference_samples: int,
+    workers: int,
+    max_total_workers: int,
+    prefetch_factor: int,
+    seed: int,
+) -> tuple[dict[str, DataLoader], dict[str, int]]:
+    loaders: dict[str, DataLoader] = {}
+    batch_sizes: dict[str, int] = {}
+    workers = min(workers, max_total_workers // max(1, len(manifest["sources"])))
+    for offset, source in enumerate(manifest["sources"]):
+        entry = source["splits"][split]
+        static_positions = None
+        positions_path = None
+        if source.get("static_positions"):
+            _, values = load_positions(
+                resolve_data_path(source["static_positions"], manifest_path, repository)
+            )
+            static_positions = np.asarray(values, dtype=np.float32)
+        elif entry.get("channel_positions"):
+            positions_path = resolve_data_path(
+                entry["channel_positions"], manifest_path, repository
+            )
+        else:
+            raise ValueError(
+                f"{source['name']} needs static_positions or per-window channel_positions"
+            )
+        dataset = PositionedNpyWindowDataset(
+            resolve_data_path(entry["signals"], manifest_path, repository),
+            static_positions=static_positions,
+            positions=positions_path,
+            channel_mask=(
+                resolve_data_path(entry["channel_mask"], manifest_path, repository)
+                if entry.get("channel_mask")
+                else None
+            ),
+        )
+        declared_samples = int(source["window_samples"])
+        if dataset.window_samples != declared_samples:
+            raise ValueError(
+                f"{source['name']} declares {declared_samples} samples but contains "
+                f"{dataset.window_samples}"
+            )
+        batch_size = token_budget_batch_size(
+            dataset.window_samples,
+            reference_samples=reference_samples,
+            reference_batch_size=reference_batch_size,
+        )
+        generator = torch.Generator().manual_seed(seed + offset)
+        loaders[source["name"]] = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=split == "train",
+            drop_last=split == "train",
+            num_workers=workers if split == "train" else 0,
+            pin_memory=True,
+            persistent_workers=split == "train" and workers > 0,
+            prefetch_factor=prefetch_factor if split == "train" and workers > 0 else None,
+            generator=generator,
+        )
+        batch_sizes[source["name"]] = batch_size
+    return loaders, batch_sizes
+
+
 def source_probabilities(recipe: dict) -> tuple[list[str], list[float]]:
     tuab_weight = float(recipe["data"]["mixture"]["TUAB"])
     emotiv_weight = float(recipe["data"]["mixture"]["Emotiv_total"])
@@ -104,6 +224,12 @@ def source_probabilities(recipe: dict) -> tuple[list[str], list[float]]:
     weights = [emotiv_weight / len(EMOTIV_SOURCES)] * len(EMOTIV_SOURCES) + [tuab_weight]
     if not np.isclose(sum(weights), 1.0):
         raise ValueError(f"source mixture must sum to one, got {sum(weights)}")
+    return names, weights
+
+
+def manifest_source_probabilities(manifest: dict) -> tuple[list[str], list[float]]:
+    names = [source["name"] for source in manifest["sources"]]
+    weights = [float(source["weight"]) for source in manifest["sources"]]
     return names, weights
 
 
@@ -126,6 +252,21 @@ def next_source_batch(name: str, loaders: dict, iterators: dict):
     except StopIteration:
         iterators[name] = iter(loaders[name])
         return next(iterators[name])
+
+
+def move_batch_to_device(batch, static_positions, device):
+    if len(batch) == 2:
+        signals, channel_mask = batch
+        positions = static_positions
+    elif len(batch) == 3:
+        signals, channel_mask, positions = batch
+    else:
+        raise ValueError(f"expected a 2- or 3-tensor EEG batch, got {len(batch)}")
+    return (
+        signals.to(device, non_blocking=True),
+        channel_mask.to(device, non_blocking=True),
+        positions.to(device, non_blocking=True),
+    )
 
 
 def reconstruction_step(
@@ -171,16 +312,17 @@ def validate(
     generator = torch.Generator(device=device).manual_seed(seed)
     for name, loader in loaders.items():
         total, count = 0.0, 0
-        for batch_index, (signals, channel_mask) in enumerate(loader):
+        for batch_index, batch in enumerate(loader):
             if batch_index >= batches_per_source:
                 break
-            signals = signals.to(device, non_blocking=True)
-            channel_mask = channel_mask.to(device, non_blocking=True)
+            signals, channel_mask, batch_positions = move_batch_to_device(
+                batch, positions.get(name), device
+            )
             loss = reconstruction_step(
                 model,
                 signals,
                 channel_mask,
-                positions[name],
+                batch_positions,
                 loss_function,
                 mask_ratio,
                 0.0,
@@ -197,8 +339,9 @@ def validate(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path("configs/samba.yaml"))
-    parser.add_argument("--emotiv-root", type=Path, required=True)
-    parser.add_argument("--tuab-root", type=Path, required=True)
+    parser.add_argument("--manifest", type=Path, default=None)
+    parser.add_argument("--emotiv-root", type=Path, default=None)
+    parser.add_argument("--tuab-root", type=Path, default=None)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--resume", type=Path, default=None)
     parser.add_argument("--micro-batch-size", type=int, default=None)
@@ -216,12 +359,42 @@ def main() -> None:
     args = parser.parse_args()
 
     recipe = yaml.safe_load(args.config.read_text())
-    if recipe.get("variant") != "SAMBA" or recipe.get("status") != "data_policy_frozen":
-        raise ValueError("train_samba.py requires the frozen rebuilt SAMBA data policy")
-    emotiv_metadata = json.loads((args.emotiv_root / "materialization.json").read_text())
-    if emotiv_metadata.get("format") != "samba-emotiv-abs-q95-v1" or not emotiv_metadata.get("complete"):
-        raise ValueError("Emotiv materialization is incomplete or unsupported")
-    manifest_hash, tuab_identity = combined_manifest_hash(recipe, emotiv_metadata, args.tuab_root)
+    if recipe.get("variant") != "SAMBA" or recipe.get("status") not in {
+        "data_policy_frozen",
+        "multi_context_v2",
+    }:
+        raise ValueError("unsupported SAMBA training recipe")
+    if args.manifest is None and (args.emotiv_root is None or args.tuab_root is None):
+        parser.error("use --manifest, or provide both --emotiv-root and --tuab-root")
+    if args.manifest is not None and (
+        args.emotiv_root is not None or args.tuab_root is not None
+    ):
+        parser.error("--manifest cannot be combined with legacy data roots")
+
+    repository = Path(__file__).resolve().parents[1]
+    multi_context_manifest = None
+    emotiv_metadata = None
+    tuab_identity = None
+    source_identities = None
+    if args.manifest is not None:
+        multi_context_manifest = load_pretrain_manifest(args.manifest)
+        if int(multi_context_manifest["sampling_rate"]) != int(recipe["sampling_rate"]):
+            raise ValueError("manifest and recipe sampling rates differ")
+        manifest_hash, source_identities = multi_context_manifest_hash(
+            recipe, multi_context_manifest, args.manifest, repository
+        )
+    else:
+        emotiv_metadata = json.loads(
+            (args.emotiv_root / "materialization.json").read_text()
+        )
+        if (
+            emotiv_metadata.get("format") != "samba-emotiv-abs-q95-v1"
+            or not emotiv_metadata.get("complete")
+        ):
+            raise ValueError("Emotiv materialization is incomplete or unsupported")
+        manifest_hash, tuab_identity = combined_manifest_hash(
+            recipe, emotiv_metadata, args.tuab_root
+        )
 
     if not torch.cuda.is_available():
         raise RuntimeError("SAMBA pretraining requires CUDA")
@@ -236,10 +409,7 @@ def main() -> None:
     torch.cuda.manual_seed_all(seed)
     source_rng = random.Random(seed)
 
-    repository = Path(__file__).resolve().parents[1]
     target_names, target_positions = load_positions(repository / recipe["target_montage"])
-    _, emotiv_positions_list = load_positions(repository / "Montage/Emotiv.xlsx")
-    _, tuab_positions_list = load_positions(repository / "Montage/TUAB_16.xlsx")
     model_config = SambaConfig(
         **recipe["model"],
         target_channel_names=target_names,
@@ -249,13 +419,21 @@ def main() -> None:
         checkpoint_variant="SAMBA",
     )
     model = SambaModel(model_config).to(device)
-    positions = {
-        **{
-            f"Emotiv/{source}": torch.tensor(emotiv_positions_list, dtype=torch.float32, device=device)
-            for source in EMOTIV_SOURCES
-        },
-        "TUAB": torch.tensor(tuab_positions_list, dtype=torch.float32, device=device),
-    }
+    positions = {}
+    if multi_context_manifest is None:
+        _, emotiv_positions_list = load_positions(repository / "Montage/Emotiv.xlsx")
+        _, tuab_positions_list = load_positions(repository / "Montage/TUAB_16.xlsx")
+        positions = {
+            **{
+                f"Emotiv/{source}": torch.tensor(
+                    emotiv_positions_list, dtype=torch.float32, device=device
+                )
+                for source in EMOTIV_SOURCES
+            },
+            "TUAB": torch.tensor(
+                tuab_positions_list, dtype=torch.float32, device=device
+            ),
+        }
 
     batch_size = args.micro_batch_size or int(training["micro_batch_size"])
     accumulation = args.accumulation_steps or int(training["gradient_accumulation_steps"])
@@ -270,7 +448,10 @@ def main() -> None:
         else int(training["workers_per_source"])
     )
     prefetch_factor = int(training["prefetch_factor"])
-    names, weights = source_probabilities(recipe)
+    if multi_context_manifest is None:
+        names, weights = source_probabilities(recipe)
+    else:
+        names, weights = manifest_source_probabilities(multi_context_manifest)
     source_weights = dict(zip(names, weights))
 
     optimizer = torch.optim.AdamW(
@@ -292,6 +473,7 @@ def main() -> None:
     loss_function = TimeFrequencyReconstructionLoss(
         float(objective["time_weight"]),
         float(objective["frequency_weight"]),
+        objective.get("frequency_normalization"),
     )
     autocast_enabled = training["precision"] == "bf16"
     start_epoch, best_validation = 0, float("inf")
@@ -308,51 +490,85 @@ def main() -> None:
         torch.set_rng_state(checkpoint["torch_rng_state"].cpu())
         torch.cuda.set_rng_state_all([state.cpu() for state in checkpoint["cuda_rng_state"]])
 
-    train_loaders = make_loaders(
-        args.emotiv_root,
-        args.tuab_root,
-        "train",
-        batch_size,
-        workers_per_source,
-        prefetch_factor,
-        seed,
-    )
-    val_loaders = make_loaders(
-        args.emotiv_root,
-        args.tuab_root,
-        "val",
-        batch_size,
-        0,
-        prefetch_factor,
-        seed + 1000,
-    )
+    if multi_context_manifest is None:
+        train_loaders = make_loaders(
+            args.emotiv_root,
+            args.tuab_root,
+            "train",
+            batch_size,
+            workers_per_source,
+            prefetch_factor,
+            seed,
+        )
+        val_loaders = make_loaders(
+            args.emotiv_root,
+            args.tuab_root,
+            "val",
+            batch_size,
+            0,
+            prefetch_factor,
+            seed + 1000,
+        )
+        bucket_batch_sizes = {name: batch_size for name in names}
+    else:
+        reference_samples = int(training["reference_window_samples"])
+        max_total_workers = int(training["max_total_workers"])
+        train_loaders, bucket_batch_sizes = make_manifest_loaders(
+            multi_context_manifest,
+            args.manifest,
+            repository,
+            "train",
+            batch_size,
+            reference_samples,
+            workers_per_source,
+            max_total_workers,
+            prefetch_factor,
+            seed,
+        )
+        val_loaders, _ = make_manifest_loaders(
+            multi_context_manifest,
+            args.manifest,
+            repository,
+            "val",
+            batch_size,
+            reference_samples,
+            0,
+            max_total_workers,
+            prefetch_factor,
+            seed + 1000,
+        )
+        print(
+            "duration buckets: " + json.dumps(bucket_batch_sizes, sort_keys=True),
+            flush=True,
+        )
     iterators = {name: iter(loader) for name, loader in train_loaders.items()}
 
     args.output_root.mkdir(parents=True, exist_ok=True)
     for epoch in range(start_epoch, epochs):
         model.train()
-        running_loss, examples = 0.0, 0
+        running_loss, microbatches = 0.0, 0
         started = time.monotonic()
         for optimizer_step in range(steps_per_epoch):
             optimizer.zero_grad(set_to_none=True)
             for _ in range(accumulation):
                 source = source_rng.choices(names, weights=weights, k=1)[0]
-                signals, channel_mask = next_source_batch(source, train_loaders, iterators)
-                signals = signals.to(device, non_blocking=True)
-                channel_mask = channel_mask.to(device, non_blocking=True)
+                batch = next_source_batch(source, train_loaders, iterators)
+                signals, channel_mask, batch_positions = move_batch_to_device(
+                    batch, positions.get(source), device
+                )
                 loss = reconstruction_step(
                     model,
                     signals,
                     channel_mask,
-                    positions[source],
+                    batch_positions,
                     loss_function,
                     float(objective["mask_ratio"]),
                     float(training["channel_dropout"]),
                     autocast_enabled,
                 )
                 (loss / accumulation).backward()
-                running_loss += float(loss.detach()) * len(signals)
-                examples += len(signals)
+                running_loss += float(loss.detach())
+                microbatches += 1
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             scheduler.step()
@@ -360,7 +576,7 @@ def main() -> None:
                 elapsed = time.monotonic() - started
                 print(
                     f"epoch={epoch + 1}/{epochs} step={optimizer_step + 1}/{steps_per_epoch} "
-                    f"train={running_loss / examples:.7g} lr={scheduler.get_last_lr()[0]:.3g} "
+                    f"train={running_loss / microbatches:.7g} lr={scheduler.get_last_lr()[0]:.3g} "
                     f"elapsed={elapsed:.1f}s",
                     flush=True,
                 )
@@ -374,11 +590,11 @@ def main() -> None:
             float(objective["mask_ratio"]),
             validation_batches,
             device,
-            seed + epoch,
+            seed + 100_000,
             autocast_enabled,
         )
         print(
-            f"epoch={epoch + 1}/{epochs} train={running_loss / examples:.7g} "
+            f"epoch={epoch + 1}/{epochs} train={running_loss / microbatches:.7g} "
             f"val={validation_loss:.7g} sources={json.dumps(source_validation, sort_keys=True)}",
             flush=True,
         )
@@ -406,14 +622,24 @@ def main() -> None:
                 "validation_loss": validation_loss,
                 "source_validation_loss": source_validation,
                 "manifest_sha256": manifest_hash,
-                "emotiv_manifest_sha256": emotiv_metadata["manifest_sha256"],
+                "emotiv_manifest_sha256": (
+                    emotiv_metadata["manifest_sha256"] if emotiv_metadata else None
+                ),
                 "tuab_identity": tuab_identity,
+                "source_identities": source_identities,
+                "duration_bucket_batch_sizes": bucket_batch_sizes,
                 "paper_reproduction": False,
-                "excluded_sources": ["DREAMER"],
-                "limitations": [
-                    "TUAB duration is not verified from surviving array metadata.",
-                    "Recovered TUAB arrays do not retain recording or subject IDs.",
-                ],
+                "excluded_sources": (
+                    ["DREAMER"] if multi_context_manifest is None else []
+                ),
+                "limitations": (
+                    [
+                        "TUAB duration is not verified from surviving array metadata.",
+                        "Recovered TUAB arrays do not retain recording or subject IDs.",
+                    ]
+                    if multi_context_manifest is None
+                    else multi_context_manifest.get("limitations", [])
+                ),
             }
             (args.output_root / "best" / "training_metadata.json").write_text(
                 json.dumps(metadata, indent=2, sort_keys=True) + "\n"

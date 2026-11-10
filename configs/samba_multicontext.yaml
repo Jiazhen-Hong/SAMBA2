@@ -1,0 +1,61 @@
+variant: SAMBA
+status: multi_context_v2
+paper_reproduction: false
+sampling_rate: 128
+target_montage: Montage/standard_1020_positions.xlsx
+reconstruction_space: common_cdse_target
+
+data:
+  batching: source_and_duration_homogeneous_microbatches
+  cross_bucket_training: gradient_accumulation
+  normalization: per_window_per_channel_abs_q95
+  constant_channel_policy: mask
+  split_policy: subject_disjoint_train_and_validation_only
+
+model:
+  base_channels: 64
+  bottleneck_channels: 128
+  d_state: 16
+  d_conv: 2
+  expand: 8
+  head_dim: 16
+  cdse_hidden_dim: 32
+  mixer_backend: mamba2
+
+objective:
+  masking: temporal_semantic_random
+  mask_ratio: 0.5
+  time_loss: l1
+  frequency_loss: full_window_rfft
+  # Required when durations are mixed: unnormalized FFT magnitude grows with T.
+  frequency_normalization: ortho
+  time_weight: 1.0
+  frequency_weight: 1.0
+
+training:
+  seed: 3407
+  sampler: weighted_source_duration_buckets
+  epochs: 200
+  optimizer_steps_per_epoch: 512
+  # A 256-sample window uses 256 examples. Other buckets preserve roughly the
+  # same B*T temporal budget: 4 s -> 128, 10 s -> 51, 100 s -> 5.
+  reference_window_samples: 256
+  micro_batch_size: 256
+  gradient_accumulation_steps: 4
+  workers_per_source: 2
+  max_total_workers: 24
+  prefetch_factor: 3
+  channel_dropout: 0.1
+  initial_lr: 2.5e-4
+  max_lr: 5.0e-4
+  final_lr: 5.0e-6
+  warmup_fraction: 0.1
+  weight_decay: 0.01
+  validation_batches_per_source: 32
+  fixed_validation_mask: true
+  save_every: 20
+  precision: bf16
+
+evaluation:
+  neuralbench: true
+  wrapper: linear_probe_mean
