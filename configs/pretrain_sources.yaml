@@ -53,7 +53,18 @@ sources:
     static_positions: Montage/TUAB_16.xlsx
     task_family: clinical_resting
     device_family: TUH_clinical_EEG
-    weight: 0.30
+    weight: 0.10
+
+  # Long clinical context reconstructed from the raw EDF recordings. The
+  # source TUAB train split is divided into fixed SSL train/validation groups.
+  - name: TUAB/pathology/100s
+    provider: prepared_npy
+    root: /data/SAMBA-tmp/TUAB100
+    duration_seconds: 100
+    static_positions: Montage/TUAB_16.xlsx
+    task_family: clinical_resting
+    device_family: TUH_clinical_EEG
+    weight: 0.20
 
   # Large subject diversity and a dense clinical/developmental montage.
   - name: HBN/resting/10s

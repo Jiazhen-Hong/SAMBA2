@@ -9,6 +9,7 @@ from samba_eeg.data import (
     token_budget_batch_size,
 )
 from scripts.export_multicontext_data import add_direct_npy_source, extract_neural_batch
+from scripts.prepare_tuab_100s import stable_validation_groups
 from samba_eeg.losses import TimeFrequencyReconstructionLoss
 
 
@@ -110,3 +111,12 @@ def test_direct_npy_source_reuses_existing_arrays(tmp_path):
         (tmp_path / "train_data.npy").resolve()
     )
     assert "channel_mask" not in source["splits"]["train"]
+
+
+def test_tuab100_ssl_validation_groups_are_stable():
+    groups = {f"recording-{index:03d}" for index in range(100)}
+    first = stable_validation_groups(groups, 0.05, 3407)
+    second = stable_validation_groups(groups, 0.05, 3407)
+    assert first == second
+    assert len(first) == 5
+    assert first < groups

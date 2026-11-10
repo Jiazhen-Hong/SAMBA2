@@ -170,7 +170,8 @@ padding.
 The initial diverse corpus recipe is in `configs/pretrain_sources.yaml`:
 
 - five 14-channel Emotiv tasks at 2 seconds;
-- recovered TUAB clinical EEG with 256 stored samples per window;
+- recovered TUAB clinical EEG with 256 stored samples per window, plus newly
+  materialized 100-second TUAB windows;
 - HBN resting-state EEG at 10 seconds;
 - Stieger motor imagery and Wang SSVEP at 4 seconds;
 - ERP CORE N170 at 1 second.
@@ -202,6 +203,20 @@ python scripts/export_multicontext_data.py \
   --manifest-output /data/SAMBA-tmp/pretrain-v2/manifest.json \
   --check-only \
   --only 'TUAB/recovered/256samples'
+```
+
+Materialize the 100-second TUAB view under `/data/SAMBA-tmp`. Only recordings
+from the recovered TUAB training split are used. Five percent of its recording
+groups provide a fixed self-supervised validation set; downstream TUAB
+validation and test recordings are not read. The output is about 25 GiB and the
+job resumes at completed recording boundaries after an interruption.
+
+```bash
+python scripts/prepare_tuab_100s.py \
+  --edf-root /data/neuralbench_data/tuh_eeg/tuab/v3.0.1/edf \
+  --split-reference-root /data/data_downstream_task/TUAB/processed_Raw \
+  --output-root /data/SAMBA-tmp/TUAB100 \
+  --workers 8
 ```
 
 Use the Python 3.12 NeuralBench environment to check each additional source and
