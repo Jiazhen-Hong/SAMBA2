@@ -242,7 +242,7 @@ Run a small single-GPU integration test in the SAMBA Mamba environment:
 ```bash
 CUDA_VISIBLE_DEVICES=0 python scripts/train_samba.py \
   --config configs/samba_multicontext.yaml \
-  --manifest /data/SAMBA-tmp/pretrain-v2/manifest.json \
+  --manifest /data/SAMBA-tmp/samba-multicontext-manifest.json \
   --output-root checkpoints/SAMBA/smoke-test \
   --smoke-test
 ```
@@ -252,9 +252,22 @@ Then start the full run in `tmux`:
 ```bash
 CUDA_VISIBLE_DEVICES=0 python scripts/train_samba.py \
   --config configs/samba_multicontext.yaml \
-  --manifest /data/SAMBA-tmp/pretrain-v2/manifest.json \
-  --output-root checkpoints/SAMBA/multicontext-001
+  --manifest /data/SAMBA-tmp/samba-multicontext-manifest.json \
+  --output-root checkpoints/SAMBA/multicontext-001 \
+  --tensorboard-dir checkpoints/SAMBA/multicontext-001/tensorboard
 ```
+
+Monitor a running job from another shell:
+
+```bash
+tensorboard \
+  --logdir checkpoints/SAMBA/multicontext-001/tensorboard \
+  --host 0.0.0.0 \
+  --port 6006
+```
+
+TensorBoard records step-level training loss and learning rate, epoch-level
+training and validation losses, and validation loss for every source.
 
 The loader uses no more than 24 workers in total, with pinned memory and
 prefetching. Raw sources are resampled, filtered, and normalized online. Each

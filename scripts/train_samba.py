@@ -389,6 +389,12 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--optimizer-steps-per-epoch", type=int, default=None)
     parser.add_argument("--log-every", type=int, default=25)
+    parser.add_argument(
+        "--tensorboard-dir",
+        type=Path,
+        default=None,
+        help="Write TensorBoard events here; disabled when omitted.",
+    )
     parser.add_argument("--smoke-test", action="store_true")
     args = parser.parse_args()
 
@@ -578,6 +584,27 @@ def main() -> None:
     iterators = {name: iter(loader) for name, loader in train_loaders.items()}
 
     args.output_root.mkdir(parents=True, exist_ok=True)
+    writer = None
+    if args.tensorboard_dir is not None:
+        try:
+            from torch.utils.tensorboard import SummaryWriter
+        except ImportError as error:
+            raise ImportError(
+                "TensorBoard logging requires `python -m pip install tensorboard`"
+            ) from error
+        writer = SummaryWriter(
+            log_dir=str(args.tensorboard_dir),
+            purge_step=(start_epoch * steps_per_epoch if args.resume else None),
+            flush_secs=15,
+        )
+        writer.add_text("run/recipe", json.dumps(recipe, indent=2, sort_keys=True))
+        writer.add_text(
+            "run/source_weights", json.dumps(source_weights, indent=2, sort_keys=True)
+        )
+        writer.add_text(
+            "run/duration_bucket_batch_sizes",
+            json.dumps(bucket_batch_sizes, indent=2, sort_keys=True),
+        )
     for epoch in range(start_epoch, epochs):
         model.train()
         running_loss, microbatches = 0.0, 0
@@ -606,8 +633,18 @@ def main() -> None:
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             scheduler.step()
+            global_step = epoch * steps_per_epoch + optimizer_step + 1
+            if writer is not None:
+                writer.add_scalar(
+                    "train/loss_running", running_loss / microbatches, global_step
+                )
+                writer.add_scalar(
+                    "train/learning_rate", scheduler.get_last_lr()[0], global_step
+                )
             if (optimizer_step + 1) % args.log_every == 0 or optimizer_step == 0:
                 elapsed = time.monotonic() - started
+                if writer is not None:
+                    writer.add_scalar("train/epoch_elapsed_seconds", elapsed, global_step)
                 print(
                     f"epoch={epoch + 1}/{epochs} step={optimizer_step + 1}/{steps_per_epoch} "
                     f"train={running_loss / microbatches:.7g} lr={scheduler.get_last_lr()[0]:.3g} "
@@ -632,6 +669,18 @@ def main() -> None:
             f"val={validation_loss:.7g} sources={json.dumps(source_validation, sort_keys=True)}",
             flush=True,
         )
+        if writer is not None:
+            epoch_number = epoch + 1
+            writer.add_scalar(
+                "epoch/train_loss", running_loss / microbatches, epoch_number
+            )
+            writer.add_scalar("epoch/validation_loss", validation_loss, epoch_number)
+            for source, value in source_validation.items():
+                safe_source = source.replace("/", "_")
+                writer.add_scalar(
+                    f"validation_source/{safe_source}", value, epoch_number
+                )
+            writer.flush()
         state = {
             "epoch": epoch,
             "model": model.state_dict(),
@@ -678,6 +727,8 @@ def main() -> None:
             (args.output_root / "best" / "training_metadata.json").write_text(
                 json.dumps(metadata, indent=2, sort_keys=True) + "\n"
             )
+    if writer is not None:
+        writer.close()
 
 
 if __name__ == "__main__":
