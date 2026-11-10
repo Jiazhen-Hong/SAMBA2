@@ -84,8 +84,7 @@ def test_orthonormal_spectral_loss_is_comparable_across_lengths():
     short_prediction = torch.ones_like(short_target)
     long_target = torch.zeros(2, 3, 1280)
     long_prediction = torch.ones_like(long_target)
-    assert torch.allclose(
-        loss(short_prediction, short_target),
-        loss(long_prediction, long_target),
-        rtol=1e-5,
-    )
+    short_loss = loss(short_prediction, short_target)
+    long_loss = loss(long_prediction, long_target)
+    assert torch.allclose(short_loss, torch.tensor(1.0), rtol=1e-6)
+    assert torch.allclose(short_loss, long_loss, rtol=1e-6)

@@ -25,5 +25,24 @@ class TimeFrequencyReconstructionLoss(nn.Module):
         frequency_error = torch.fft.rfft(
             prediction, dim=-1, norm=self.fft_norm
         ) - torch.fft.rfft(target, dim=-1, norm=self.fft_norm)
-        frequency_loss = frequency_error.abs().square().mean()
+        spectral_power = frequency_error.abs().square()
+        if self.fft_norm == "ortho":
+            # rFFT stores only the nonnegative frequencies. Double the interior
+            # bins so the one-sided sum satisfies Parseval exactly, then divide
+            # by T to obtain a per-sample energy that is comparable across
+            # temporal lengths. DC and (for even T) Nyquist are not doubled.
+            weights = torch.ones(
+                spectral_power.shape[-1],
+                dtype=spectral_power.dtype,
+                device=spectral_power.device,
+            )
+            if prediction.shape[-1] % 2 == 0:
+                weights[1:-1] = 2
+            else:
+                weights[1:] = 2
+            frequency_loss = (
+                spectral_power * weights
+            ).sum(dim=-1).div(prediction.shape[-1]).mean()
+        else:
+            frequency_loss = spectral_power.mean()
         return self.time_weight * time_loss + self.frequency_weight * frequency_loss
