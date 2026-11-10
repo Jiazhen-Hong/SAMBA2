@@ -43,11 +43,13 @@ sources:
     device_family: Emotiv_EPOC_14ch
     weight: 0.04
 
-  # Clinical long-context source. NeuralBench uses its subject-disjoint split;
-  # only train and validation windows are exported.
-  - name: TUAB/pathology/10s
-    provider: prepared_npy
-    root: /data/SAMBA-tmp/TUAB10
+  # Recovered TUAB arrays. The directory is named 10s, but the surviving
+  # arrays contain 256 samples and do not retain sampling-rate metadata.
+  - name: TUAB/recovered/256samples
+    provider: direct_npy
+    root: /data/data_downstream_task/TUAB/TUAB_16ch_10s
+    train_signals: train_data.npy
+    val_signals: val_data.npy
     static_positions: Montage/TUAB_16.xlsx
     task_family: clinical_resting
     device_family: TUH_clinical_EEG

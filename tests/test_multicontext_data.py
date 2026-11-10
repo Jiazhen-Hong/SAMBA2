@@ -8,8 +8,7 @@ from samba_eeg.data import (
     load_pretrain_manifest,
     token_budget_batch_size,
 )
-from scripts.export_multicontext_data import extract_neural_batch
-from scripts.prepare_tuab_10s import stable_validation_groups
+from scripts.export_multicontext_data import add_direct_npy_source, extract_neural_batch
 from samba_eeg.losses import TimeFrequencyReconstructionLoss
 
 
@@ -91,10 +90,23 @@ def test_orthonormal_spectral_loss_is_comparable_across_lengths():
     assert torch.allclose(short_loss, long_loss, rtol=1e-6)
 
 
-def test_tuab_ssl_validation_groups_are_stable_and_disjoint():
-    groups = {f"subject-{index:03d}" for index in range(100)}
-    first = stable_validation_groups(groups, 0.05, 3407)
-    second = stable_validation_groups(groups, 0.05, 3407)
-    assert first == second
-    assert len(first) == 5
-    assert first < groups
+def test_direct_npy_source_reuses_existing_arrays(tmp_path):
+    np.save(tmp_path / "train_data.npy", np.zeros((7, 16, 256), dtype=np.float32))
+    np.save(tmp_path / "val_data.npy", np.zeros((3, 16, 256), dtype=np.float32))
+    source = add_direct_npy_source(
+        {
+            "name": "TUAB/recovered/256samples",
+            "root": str(tmp_path),
+            "train_signals": "train_data.npy",
+            "val_signals": "val_data.npy",
+            "static_positions": "Montage/TUAB_16.xlsx",
+            "task_family": "clinical_resting",
+            "device_family": "TUH_clinical_EEG",
+            "weight": 0.3,
+        }
+    )
+    assert source["window_samples"] == 256
+    assert source["splits"]["train"]["signals"] == str(
+        (tmp_path / "train_data.npy").resolve()
+    )
+    assert "channel_mask" not in source["splits"]["train"]

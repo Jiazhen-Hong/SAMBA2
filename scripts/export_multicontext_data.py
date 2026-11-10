@@ -226,6 +226,40 @@ def add_prepared_source(source: dict) -> dict:
     }
 
 
+def add_direct_npy_source(source: dict) -> dict:
+    """Reference existing float32 arrays without copying or rewriting them."""
+    root = Path(source["root"]).expanduser()
+    splits = {}
+    expected_shape = None
+    for split in ("train", "val"):
+        path = root / source[f"{split}_signals"]
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        probe = np.load(path, mmap_mode="r", allow_pickle=False)
+        if probe.ndim != 3 or probe.dtype != np.float32:
+            raise ValueError(
+                f"{path} must be float32 [N, C, T], got {probe.shape}/{probe.dtype}"
+            )
+        shape = tuple(int(value) for value in probe.shape[1:])
+        if expected_shape is None:
+            expected_shape = shape
+        elif shape != expected_shape:
+            raise ValueError(
+                f"train/val shapes differ: {expected_shape} versus {shape}"
+            )
+        splits[split] = {"signals": str(path.resolve())}
+    return {
+        "name": source["name"],
+        "weight": float(source["weight"]),
+        "provider": "direct_npy",
+        "task_family": source["task_family"],
+        "device_family": source["device_family"],
+        "window_samples": expected_shape[-1],
+        "static_positions": source["static_positions"],
+        "splits": splits,
+    }
+
+
 def add_neuralbench_source(
     source: dict, output_root: Path, workers: int, check_only: bool = False
 ) -> dict | None:
@@ -346,6 +380,8 @@ def main() -> None:
         raise ValueError("the current exporter requires a 128-Hz canonical rate")
     sources = []
     for source in config["sources"]:
+        if args.only and source["name"] not in args.only:
+            continue
         provider = source["provider"]
         if provider == "prepared_npy":
             prepared = add_prepared_source(source)
@@ -358,9 +394,15 @@ def main() -> None:
                 print(f"{source['name']}: signals={shape} prepared", flush=True)
             else:
                 sources.append(prepared)
+        elif provider == "direct_npy":
+            direct = add_direct_npy_source(source)
+            if args.check_only:
+                path = direct["splits"]["train"]["signals"]
+                shape = np.load(path, mmap_mode="r", allow_pickle=False).shape
+                print(f"{source['name']}: signals={shape} direct", flush=True)
+            else:
+                sources.append(direct)
         elif provider == "neuralbench":
-            if args.only and source["name"] not in args.only:
-                continue
             exported = add_neuralbench_source(
                 source, args.output_root, args.workers, check_only=args.check_only
             )
@@ -385,6 +427,7 @@ def main() -> None:
         "sources": sources,
         "limitations": [
             "NeuralBench validation and test splits are excluded from self-supervised pretraining.",
+            "Recovered TUAB arrays contain 256 samples per window, but their physical duration cannot be verified from surviving metadata.",
             "Dataset overlap must be disclosed when evaluating an in-domain downstream task.",
         ],
     }

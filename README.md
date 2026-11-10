@@ -170,7 +170,7 @@ padding.
 The initial diverse corpus recipe is in `configs/pretrain_sources.yaml`:
 
 - five 14-channel Emotiv tasks at 2 seconds;
-- TUAB clinical EEG at 10 seconds;
+- recovered TUAB clinical EEG with 256 stored samples per window;
 - HBN resting-state EEG at 10 seconds;
 - Stieger motor imagery and Wang SSVEP at 4 seconds;
 - ERP CORE N170 at 1 second.
@@ -189,16 +189,19 @@ python scripts/prepare_samba_data.py \
   --output-root /data/SAMBA-tmp/Emotiv
 ```
 
-Prepare true 10-second TUAB windows directly from the raw EDF files. This path
-uses the paper's 16 bipolar channels, limits processing to eight workers, and is
-resumable at recording boundaries. It does not build a NeuralBench task cache.
+The recovered TUAB arrays are read directly from
+`/data/data_downstream_task/TUAB/TUAB_16ch_10s`. They are not copied or
+rewritten. The directory name says 10 seconds, while each stored window has 256
+samples and the surviving files contain no sampling-rate metadata. The pipeline
+therefore records the array length without making an unsupported duration claim.
 
 ```bash
-python scripts/prepare_tuab_10s.py \
-  --edf-root /data/neuralbench_data/Lopez2017Tuab/edf \
-  --split-reference-root /data/data_downstream_task/TUAB/processed_Raw \
-  --output-root /data/SAMBA-tmp/TUAB10 \
-  --workers 8
+python scripts/export_multicontext_data.py \
+  --config configs/pretrain_sources.yaml \
+  --output-root /data/SAMBA-tmp/pretrain-v2 \
+  --manifest-output /data/SAMBA-tmp/pretrain-v2/manifest.json \
+  --check-only \
+  --only 'TUAB/recovered/256samples'
 ```
 
 Use the Python 3.12 NeuralBench environment to check each additional source and
@@ -245,9 +248,10 @@ prefetching. Resampling, filtering, normalization, and coordinate extraction are
 completed before training. Validation uses fixed windows and a fixed masking
 seed, so checkpoint selection is comparable across epochs.
 
-The previous `configs/samba.yaml` command remains available only to inspect the
-256-sample pilot checkpoint. Its recovered directory name did not verify a
-10-second TUAB duration and it should not be used for the new multi-context run.
+The previous `configs/samba.yaml` command remains available to inspect the
+256-sample pilot checkpoint. The multi-context run may reuse the same recovered
+TUAB arrays, but its manifest explicitly records that their physical duration
+cannot be verified from the surviving metadata.
 
 On shared systems with limited `/dev/shm`, pass `--workers-per-source 0`. The dataset implements vectorized batch reads, so this mode avoids multiprocessing shared memory without returning to slow per-sample disk access.
 
