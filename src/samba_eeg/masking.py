@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import torch
 
 
@@ -7,6 +9,8 @@ def temporal_semantic_random_mask(
     signals: torch.Tensor,
     mask_ratio: float = 0.5,
     num_visible_blocks: int = 8,
+    min_block_ratio: float = 0.5,
+    max_block_ratio: float = 1.5,
     generator: torch.Generator | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Mask time spans while preserving exactly the requested number of samples.
@@ -18,14 +22,35 @@ def temporal_semantic_random_mask(
         raise ValueError("signals must have shape [batch, channels, time]")
     if not 0 <= mask_ratio < 1:
         raise ValueError("mask_ratio must be in [0, 1)")
+    if not 0 < min_block_ratio <= 1 <= max_block_ratio:
+        raise ValueError("block ratios must satisfy 0 < min <= 1 <= max")
     batch, channels, length = signals.shape
     visible = length - int(round(length * mask_ratio))
     blocks = max(1, min(num_visible_blocks, visible))
-    raw_lengths = torch.rand((batch, blocks), device=signals.device, generator=generator)
-    block_lengths = torch.floor(
-        raw_lengths / raw_lengths.sum(dim=1, keepdim=True) * (visible - blocks)
-    ).long() + 1
-    block_lengths[:, -1] += visible - block_lengths.sum(dim=1)
+    average = visible / blocks
+    minimum = max(1, math.floor(min_block_ratio * average))
+    maximum = max(minimum, math.ceil(max_block_ratio * average))
+    block_lengths = torch.empty(
+        (batch, blocks), dtype=torch.long, device=signals.device
+    )
+    remaining = torch.full(
+        (batch,), visible, dtype=torch.long, device=signals.device
+    )
+    for index in range(blocks - 1):
+        remaining_blocks = blocks - index - 1
+        low = torch.maximum(
+            torch.full_like(remaining, minimum),
+            remaining - remaining_blocks * maximum,
+        )
+        high = torch.minimum(
+            torch.full_like(remaining, maximum),
+            remaining - remaining_blocks * minimum,
+        )
+        draw = torch.rand(batch, device=signals.device, generator=generator)
+        sampled = low + torch.floor(draw * (high - low + 1)).long()
+        block_lengths[:, index] = sampled
+        remaining -= sampled
+    block_lengths[:, -1] = remaining
 
     gap_total = length - visible
     raw_gaps = torch.rand((batch, blocks + 1), device=signals.device, generator=generator)

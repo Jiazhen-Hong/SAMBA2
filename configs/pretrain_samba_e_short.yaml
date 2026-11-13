@@ -1,0 +1,83 @@
+sampling_rate: 128
+
+# SAMBA-E extension: every source is exactly 256 samples (2 seconds) at 128 Hz.
+# Equal source weights prevent a large dataset from dominating by window count.
+sources:
+  - name: Emotiv/Alpha/2s
+    provider: prepared_npy
+    root: /data/SAMBA-tmp/Emotiv/Alpha
+    static_positions: Montage/Emotiv.xlsx
+    window_samples: 256
+    task_family: resting_state
+    device_family: Emotiv_EPOC_14ch
+    weight: 0.125
+
+  - name: Emotiv/Attention/2s
+    provider: prepared_npy
+    root: /data/SAMBA-tmp/Emotiv/Attention
+    static_positions: Montage/Emotiv.xlsx
+    window_samples: 256
+    task_family: attention
+    device_family: Emotiv_EPOC_14ch
+    weight: 0.125
+
+  - name: Emotiv/Crowdsource/2s
+    provider: prepared_npy
+    root: /data/SAMBA-tmp/Emotiv/Crowdsource
+    static_positions: Montage/Emotiv.xlsx
+    window_samples: 256
+    task_family: resting_state
+    device_family: Emotiv_EPOC_family_14ch
+    weight: 0.125
+
+  - name: Emotiv/DriverDistraction/2s
+    provider: prepared_npy
+    root: /data/SAMBA-tmp/Emotiv/DriverDistraction
+    static_positions: Montage/Emotiv.xlsx
+    window_samples: 256
+    task_family: sustained_attention
+    device_family: Emotiv_EPOC_14ch
+    weight: 0.125
+
+  - name: Emotiv/STEW/2s
+    provider: prepared_npy
+    root: /data/SAMBA-tmp/Emotiv/STEW
+    static_positions: Montage/Emotiv.xlsx
+    window_samples: 256
+    task_family: mental_workload
+    device_family: Emotiv_EPOC_14ch
+    weight: 0.125
+
+  - name: HBN/resting/2s
+    provider: raw_mne
+    root: /data/neuralbench_data/Shirazi2024Hbn
+    pattern: R9/download/sub-*/eeg/*task-RestingState_eeg.set
+    reader: eeglab
+    duration_seconds: 2
+    window_samples: 256
+    task_family: developmental_resting
+    device_family: HBN_high_density_EEG
+    weight: 0.125
+
+  - name: Muse/sleep-onset/2s
+    provider: raw_mne
+    root: /data/neuralbench_data/Interaxon2026Muse
+    pattern: download/**/*.vhdr
+    reader: brainvision
+    fallback_montage: standard_1020
+    duration_seconds: 2
+    window_samples: 256
+    task_family: sleep_onset
+    device_family: Interaxon_Muse_4ch
+    weight: 0.125
+
+  - name: DICE/eyes-closed/2s
+    provider: raw_mne
+    root: /data/neuralbench_data/Miltiadous2023Dice
+    pattern: download/sub-*/eeg/*task-eyesclosed_eeg.set
+    reader: eeglab
+    duration_seconds: 2
+    window_samples: 256
+    task_family: depression_resting
+    device_family: clinical_19ch_EEG
+    weight: 0.125

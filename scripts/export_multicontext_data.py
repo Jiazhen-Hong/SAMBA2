@@ -215,6 +215,12 @@ def add_prepared_source(source: dict) -> dict:
             "channel_mask": str(mask.resolve()),
         }
     probe = np.load(splits["train"]["signals"], mmap_mode="r", allow_pickle=False)
+    expected_samples = source.get("window_samples")
+    if expected_samples is not None and int(probe.shape[-1]) != int(expected_samples):
+        raise ValueError(
+            f"{source['name']} has {probe.shape[-1]} samples; expected "
+            f"{expected_samples}"
+        )
     return {
         "name": source["name"],
         "weight": float(source["weight"]),
@@ -319,6 +325,12 @@ def add_raw_mne_source(source: dict, check_only: bool = False) -> dict:
     reader = str(source["reader"])
     target_rate = int(source.get("sample_rate", 128))
     window_samples = int(round(float(source["duration_seconds"]) * target_rate))
+    expected_samples = source.get("window_samples")
+    if expected_samples is not None and window_samples != int(expected_samples):
+        raise ValueError(
+            f"{source['name']} resolves to {window_samples} samples; expected "
+            f"{expected_samples}"
+        )
     first = open_raw_header(paths[0], reader)
     eeg_indices = [
         index
@@ -571,18 +583,27 @@ def main() -> None:
         raise ValueError(
             f"selected source weights sum to {weights}; export the complete configured set"
         )
+    limitations = [
+        "NeuralBench validation and test splits are excluded from self-supervised pretraining.",
+        "Dataset overlap must be disclosed when evaluating an in-domain downstream task.",
+    ]
+    if any(source["name"] == "TUAB/recovered/256samples" for source in sources):
+        limitations.append(
+            "Recovered TUAB arrays contain 256 samples per window, but their "
+            "physical duration cannot be verified from surviving metadata."
+        )
+    if any(source["provider"] == "raw_mne" for source in sources):
+        limitations.append(
+            "Raw MNE sources are filtered and resampled online and create no "
+            "persistent EEG copy."
+        )
     manifest = {
         "format": FORMAT,
         "sampling_rate": 128,
         "normalization": "per_window_per_channel_abs_q95",
         "split_policy": "Existing prepared splits or fixed subject-disjoint raw SSL train/val splits",
         "sources": sources,
-        "limitations": [
-            "NeuralBench validation and test splits are excluded from self-supervised pretraining.",
-            "Recovered TUAB arrays contain 256 samples per window, but their physical duration cannot be verified from surviving metadata.",
-            "Raw MNE sources are filtered and resampled online and create no persistent EEG copy.",
-            "Dataset overlap must be disclosed when evaluating an in-domain downstream task.",
-        ],
+        "limitations": limitations,
     }
     atomic_json(manifest, args.manifest_output)
     print(f"wrote {args.manifest_output}", flush=True)

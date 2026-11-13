@@ -71,6 +71,47 @@ def test_one_checkpoint_accepts_different_channel_counts_and_lengths():
     assert second.shape == (1, 10, 16)
 
 
+def test_coordinate_decoder_reconstructs_each_runtime_input_montage():
+    spatial_config = SambaConfig(
+        base_channels=8,
+        bottleneck_channels=16,
+        d_state=4,
+        d_conv=2,
+        expand=2,
+        head_dim=8,
+        target_channel_names=["A", "B", "C", "D"],
+        target_positions=[[0, 0, 1], [1, 0, 0], [0, 1, 0], [-1, 0, 0]],
+        reconstruction_mode="input_coordinates",
+        mixer_backend="gru",
+    )
+    model = SambaModel(spatial_config)
+    for channels in (4, 14, 19, 129):
+        signals = torch.randn(2, channels, 32)
+        positions = torch.randn(2, channels, 3)
+        output = model(signals, positions)
+        assert output.reconstruction.shape == signals.shape
+
+
+def test_fixed_input_reconstruction_uses_declared_training_montage():
+    fixed_config = SambaConfig(
+        base_channels=8,
+        bottleneck_channels=16,
+        d_state=4,
+        d_conv=2,
+        expand=2,
+        head_dim=8,
+        target_channel_names=["A", "B", "C", "D"],
+        target_positions=[[0, 0, 1], [1, 0, 0], [0, 1, 0], [-1, 0, 0]],
+        reconstruction_channels=3,
+        reconstruction_mode="fixed_input",
+        mixer_backend="gru",
+    )
+    model = SambaModel(fixed_config)
+    signals = torch.randn(2, 3, 32)
+    output = model(signals, torch.randn(3, 3))
+    assert output.reconstruction.shape == signals.shape
+
+
 def test_mask_is_exact_for_short_sequences():
     signals = torch.ones(3, 2, 16)
     masked, mask = temporal_semantic_random_mask(signals, mask_ratio=0.5, num_visible_blocks=8)

@@ -89,7 +89,24 @@ The paper results remain the record for the original experiments. New weights mu
 
 ### Current release direction
 
-The repository now targets one checkpoint named **SAMBA**. The rebuilt pipeline is designed for joint training with verified Emotiv and TUAB sources, source-homogeneous microbatches, a shared coordinate-driven reconstruction space, and explicit preprocessing metadata. It also improves support for variable channel layouts and temporal lengths in downstream use.
+The current training plan has two checkpoints. **SAMBA-T** follows the paper's
+TUAB-only 100-second setting. **SAMBA-E** keeps the paper's 128-Hz,
+256-sample window while adding spatial diversity from several devices. The
+short track uses source-homogeneous microbatches and a coordinate-driven
+decoder so that each dataset is reconstructed in its original channel space.
+Both encoders remain compatible with variable channel layouts and temporal
+lengths at downstream inference time.
+
+The paper's value `64` is the first encoder feature width, not a required EEG
+channel count. The paper uses 16-channel TUAB and 14-channel Emotiv inputs;
+64-channel datasets appear in downstream evaluation. The shared MNE
+`standard_1020` coordinate table used by the implementation contains 94
+positions.
+
+The exact configurations and Axon launch commands are in
+[`docs/PAPER_ALIGNED_TRACKS.md`](docs/PAPER_ALIGNED_TRACKS.md). The earlier
+mixed-duration `configs/samba_multicontext.yaml` experiment is retained for
+research comparison, but it is not the recommended checkpoint pipeline.
 
 The recovered TUAB array currently has 256 samples per window. Its directory name contains `10s`, but the surviving files do not provide enough metadata to verify a 10-second duration. The configuration records this duration as unknown rather than inferring it from the directory name.
 

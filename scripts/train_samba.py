@@ -33,6 +33,18 @@ from samba_eeg.losses import TimeFrequencyReconstructionLoss
 
 
 EMOTIV_SOURCES = ("Alpha", "Attention", "Crowdsource", "DriverDistraction", "STEW")
+SUPPORTED_RECIPES = {
+    ("SAMBA", "data_policy_frozen"),
+    ("SAMBA", "multi_context_v2"),
+    ("SAMBA-T", "paper_aligned_tuab100"),
+    ("SAMBA-E", "paper_window_spatially_diverse"),
+}
+
+
+def validate_training_recipe(recipe: dict) -> None:
+    identity = (recipe.get("variant"), recipe.get("status"))
+    if identity not in SUPPORTED_RECIPES:
+        raise ValueError(f"unsupported SAMBA training recipe: {identity}")
 
 
 def load_positions(path: Path) -> tuple[list[str], list[list[float]]]:
@@ -323,8 +335,16 @@ def reconstruction_step(
     )
     masked = masked.masked_fill(~effective_mask[..., None], 0)
     with torch.autocast("cuda", dtype=torch.bfloat16, enabled=autocast_enabled):
-        target, _ = model.cdse(signals, positions, channel_mask)
+        if model.config.reconstruction_mode == "target_montage":
+            target, _ = model.cdse(signals, positions, channel_mask)
+        else:
+            target = signals
         prediction = model(masked, positions, effective_mask).reconstruction
+    if prediction.shape != target.shape:
+        raise ValueError(
+            f"reconstruction {tuple(prediction.shape)} does not match fixed target "
+            f"{tuple(target.shape)}"
+        )
     return loss_function(prediction.float(), target.detach().float())
 
 
@@ -399,11 +419,7 @@ def main() -> None:
     args = parser.parse_args()
 
     recipe = yaml.safe_load(args.config.read_text())
-    if recipe.get("variant") != "SAMBA" or recipe.get("status") not in {
-        "data_policy_frozen",
-        "multi_context_v2",
-    }:
-        raise ValueError("unsupported SAMBA training recipe")
+    validate_training_recipe(recipe)
     if args.manifest is None and (args.emotiv_root is None or args.tuab_root is None):
         parser.error("use --manifest, or provide both --emotiv-root and --tuab-root")
     if args.manifest is not None and (
@@ -454,9 +470,8 @@ def main() -> None:
         **recipe["model"],
         target_channel_names=target_names,
         target_positions=target_positions,
-        reconstruction_channels=len(target_names),
         sampling_rate=float(recipe["sampling_rate"]),
-        checkpoint_variant="SAMBA",
+        checkpoint_variant=str(recipe["variant"]),
     )
     model = SambaModel(model_config).to(device)
     positions = {}
@@ -700,7 +715,7 @@ def main() -> None:
             best_validation = validation_loss
             model.save_pretrained(args.output_root / "best")
             metadata = {
-                "variant": "SAMBA",
+                "variant": str(recipe["variant"]),
                 "epoch": epoch + 1,
                 "validation_loss": validation_loss,
                 "source_validation_loss": source_validation,

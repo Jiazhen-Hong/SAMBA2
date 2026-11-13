@@ -1,0 +1,13 @@
+sampling_rate: 128
+
+# Paper-aligned SAMBA-T: one homogeneous 16-channel, 100-second TUAB source.
+sources:
+  - name: TUAB/pathology/100s
+    provider: prepared_npy
+    root: /data/SAMBA-tmp/TUAB100
+    duration_seconds: 100
+    window_samples: 12800
+    static_positions: Montage/TUAB_16.xlsx
+    task_family: clinical_resting
+    device_family: TUH_clinical_EEG
+    weight: 1.0

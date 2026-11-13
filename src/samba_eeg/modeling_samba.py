@@ -89,6 +89,53 @@ class CoordinateDrivenSpatialEmbedding(nn.Module):
         return torch.einsum("boc,bct->bot", weights, signals), weights
 
 
+class CoordinateDrivenSpatialDecoder(nn.Module):
+    """Map the shared montage back to each sample's fixed raw EEG channels.
+
+    Unlike the encoder CDSE, this module predicts output weights for the
+    runtime input positions.  Reconstruction can therefore use the original
+    EEG as a stationary target even when pretraining mixes montages.
+    """
+
+    def __init__(self, source_positions: torch.Tensor, hidden_dim: int) -> None:
+        super().__init__()
+        self.register_buffer(
+            "source_positions", source_positions.float(), persistent=True
+        )
+        self.net = nn.Sequential(
+            nn.Linear(3, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, 1)
+        )
+
+    def forward(
+        self,
+        signals: torch.Tensor,
+        output_positions: torch.Tensor,
+        channel_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if output_positions.ndim == 2:
+            output_positions = output_positions.unsqueeze(0).expand(
+                signals.shape[0], -1, -1
+            )
+        if output_positions.ndim != 3 or output_positions.shape[0] != signals.shape[0]:
+            raise ValueError("output_positions must have shape [C, 3] or [B, C, 3]")
+        finite_channels = torch.isfinite(output_positions).all(dim=-1)
+        output_mask = (
+            finite_channels
+            if channel_mask is None
+            else channel_mask & finite_channels
+        )
+        output_positions = torch.nan_to_num(output_positions)
+        delta = (
+            output_positions[:, :, None, :]
+            - self.source_positions[None, None, :, :]
+        )
+        logits = self.net(delta.to(dtype=self.net[0].weight.dtype)).squeeze(-1)
+        weights = logits.softmax(dim=-1)
+        decoded = torch.einsum("boc,bct->bot", weights, signals)
+        decoded = decoded.masked_fill(~output_mask[..., None], 0)
+        return decoded, weights
+
+
 class _ResidualMixer(nn.Module):
     def __init__(self, config: SambaConfig, width: int) -> None:
         super().__init__()
@@ -147,6 +194,13 @@ class SambaModel(nn.Module):
         self.decoder2_mixer = _ResidualMixer(config, base)
         self.decoder1 = nn.Conv1d(base * 2, base, 3, padding=1)
         self.output_embedding = nn.Conv1d(base, config.output_channels, 1)
+        self.spatial_decoder = (
+            CoordinateDrivenSpatialDecoder(
+                torch.tensor(config.target_positions), config.cdse_hidden_dim
+            )
+            if config.reconstruction_mode == "input_coordinates"
+            else None
+        )
 
     def _encode_all(self, signals, input_positions, channel_mask=None):
         if signals.ndim != 3 or signals.shape[-1] < 8:
@@ -175,7 +229,13 @@ class SambaModel(nn.Module):
         d3 = F.interpolate(d3, size=x2.shape[-1], mode="linear", align_corners=False)
         d2 = self.decoder2_mixer(self.decoder2(torch.cat([x2, d3], 1)).transpose(1, 2)).transpose(1, 2)
         d2 = F.interpolate(d2, size=x1.shape[-1], mode="linear", align_corners=False)
-        reconstruction = self.output_embedding(self.decoder1(torch.cat([x1, d2], 1)))
+        reconstruction = self.output_embedding(
+            self.decoder1(torch.cat([x1, d2], 1))
+        )
+        if self.spatial_decoder is not None:
+            reconstruction, _ = self.spatial_decoder(
+                reconstruction, input_positions, channel_mask
+            )
         return SambaOutput(reconstruction, hidden, weights)
 
     def save_pretrained(self, directory: str | Path, safe_serialization: bool = True) -> None:

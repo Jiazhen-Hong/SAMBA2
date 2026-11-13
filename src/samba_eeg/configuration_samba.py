@@ -21,6 +21,7 @@ class SambaConfig:
     target_channel_names: list[str] | None = None
     target_positions: list[list[float]] | None = None
     reconstruction_channels: int | None = None
+    reconstruction_mode: str = "target_montage"
     mixer_backend: str = "mamba2"
     sampling_rate: float | None = None
     checkpoint_variant: str | None = None
@@ -32,6 +33,17 @@ class SambaConfig:
             raise ValueError("target_channel_names and target_positions must have the same length")
         if self.bottleneck_channels % self.head_dim:
             raise ValueError("bottleneck_channels must be divisible by head_dim")
+        if self.reconstruction_mode not in {
+            "target_montage",
+            "fixed_input",
+            "input_coordinates",
+        }:
+            raise ValueError(
+                "reconstruction_mode must be target_montage, fixed_input, "
+                "or input_coordinates"
+            )
+        if self.reconstruction_mode == "fixed_input" and not self.reconstruction_channels:
+            raise ValueError("fixed_input reconstruction requires reconstruction_channels")
 
     @property
     def target_channels(self) -> int:
@@ -39,6 +51,8 @@ class SambaConfig:
 
     @property
     def output_channels(self) -> int:
+        if self.reconstruction_mode == "input_coordinates":
+            return self.target_channels
         return self.reconstruction_channels or self.target_channels
 
     def to_dict(self) -> dict[str, Any]:
