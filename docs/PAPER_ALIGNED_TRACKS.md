@@ -78,3 +78,35 @@ Start one TensorBoard instance for both tracks:
   --host 127.0.0.1 \
   --port 6006
 ```
+
+## Extending a completed run
+
+A completed OneCycle schedule cannot be continued by only increasing
+`--epochs`, because its learning rate has already reached the final value.
+Resume the optimizer and model while starting a smaller OneCycle schedule for
+the additional epochs. Reuse the same TensorBoard directory to append to the
+existing curves.
+
+For example, extend the 200-epoch short run to epoch 300 on GPU 1:
+
+```bash
+cd ~/Github/SAMBA2
+
+CUDA_VISIBLE_DEVICES=1 \
+PYTHONPATH=/data/SAMBA-tmp/python312-packages:$PWD/src \
+~/venvs/eeg26-track2-clean/bin/python scripts/train_samba.py \
+  --config configs/samba_e_short.yaml \
+  --manifest /data/SAMBA-tmp/samba-e-short-manifest.json \
+  --output-root checkpoints/SAMBA-E/short-spatial-001 \
+  --resume checkpoints/SAMBA-E/short-spatial-001/last.pt \
+  --epochs 300 \
+  --restart-scheduler \
+  --initial-lr 5e-5 \
+  --max-lr 1e-4 \
+  --final-lr 1e-6 \
+  --tensorboard-dir checkpoints/SAMBA-E/short-spatial-001/tensorboard
+```
+
+If that extension is interrupted, resume it with the same command but remove
+`--restart-scheduler` and the three learning-rate overrides. The scheduler
+state saved by the extension will then continue instead of starting over.

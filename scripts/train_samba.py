@@ -408,6 +408,14 @@ def main() -> None:
     )
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--optimizer-steps-per-epoch", type=int, default=None)
+    parser.add_argument(
+        "--restart-scheduler",
+        action="store_true",
+        help="Start a new OneCycle schedule for the remaining epochs when resuming.",
+    )
+    parser.add_argument("--initial-lr", type=float, default=None)
+    parser.add_argument("--max-lr", type=float, default=None)
+    parser.add_argument("--final-lr", type=float, default=None)
     parser.add_argument("--log-every", type=int, default=25)
     parser.add_argument(
         "--tensorboard-dir",
@@ -509,20 +517,17 @@ def main() -> None:
         names, weights = manifest_source_probabilities(multi_context_manifest)
     source_weights = dict(zip(names, weights))
 
+    initial_lr = float(args.initial_lr or training["initial_lr"])
+    max_lr = float(args.max_lr or training["max_lr"])
+    final_lr = float(args.final_lr or training["final_lr"])
+    if not 0 < final_lr <= initial_lr <= max_lr:
+        raise ValueError(
+            "learning rates must satisfy 0 < final_lr <= initial_lr <= max_lr"
+        )
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=float(training["initial_lr"]),
+        lr=initial_lr,
         weight_decay=float(training["weight_decay"]),
-    )
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer,
-        max_lr=float(training["max_lr"]),
-        epochs=epochs,
-        steps_per_epoch=steps_per_epoch,
-        pct_start=0.5 if args.smoke_test else float(training["warmup_fraction"]),
-        anneal_strategy="cos",
-        div_factor=float(training["max_lr"]) / float(training["initial_lr"]),
-        final_div_factor=float(training["initial_lr"]) / float(training["final_lr"]),
     )
     objective = recipe["objective"]
     loss_function = TimeFrequencyReconstructionLoss(
@@ -532,18 +537,64 @@ def main() -> None:
     )
     autocast_enabled = training["precision"] == "bf16"
     start_epoch, best_validation = 0, float("inf")
+    checkpoint = None
     if args.resume:
         checkpoint = torch.load(args.resume, map_location=device, weights_only=False)
         if checkpoint["manifest_sha256"] != manifest_hash:
             raise ValueError("resume checkpoint was trained with a different data manifest")
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
-        scheduler.load_state_dict(checkpoint["scheduler"])
         start_epoch = int(checkpoint["epoch"]) + 1
         best_validation = float(checkpoint["best_validation"])
         source_rng.setstate(checkpoint["source_rng_state"])
         torch.set_rng_state(checkpoint["torch_rng_state"].cpu())
         torch.cuda.set_rng_state_all([state.cpu() for state in checkpoint["cuda_rng_state"]])
+    elif args.restart_scheduler:
+        parser.error("--restart-scheduler requires --resume")
+
+    if epochs <= start_epoch:
+        raise ValueError(
+            f"target epochs ({epochs}) must exceed resume epoch ({start_epoch}); "
+            "pass the new total with --epochs"
+        )
+    if checkpoint is not None and not args.restart_scheduler:
+        saved_scheduler = checkpoint["scheduler"]
+        if int(saved_scheduler.get("last_epoch", -1)) >= int(
+            saved_scheduler.get("total_steps", 1)
+        ):
+            raise ValueError(
+                "the saved OneCycle schedule is complete; add --restart-scheduler "
+                "and pass a lower extension learning rate"
+            )
+    scheduler_epochs = epochs - start_epoch if args.restart_scheduler else epochs
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=max_lr,
+        epochs=scheduler_epochs,
+        steps_per_epoch=steps_per_epoch,
+        pct_start=0.5 if args.smoke_test else float(training["warmup_fraction"]),
+        anneal_strategy="cos",
+        div_factor=max_lr / initial_lr,
+        final_div_factor=initial_lr / final_lr,
+    )
+    schedule_metadata = {
+        "start_epoch": start_epoch if args.restart_scheduler else 0,
+        "target_epoch": epochs,
+        "cycle_epochs": scheduler_epochs,
+        "initial_lr": initial_lr,
+        "max_lr": max_lr,
+        "final_lr": final_lr,
+        "restarted_on_resume": bool(args.restart_scheduler),
+    }
+    if checkpoint is not None and not args.restart_scheduler:
+        scheduler.load_state_dict(checkpoint["scheduler"])
+        schedule_metadata = checkpoint.get("runtime_schedule", schedule_metadata)
+    if args.restart_scheduler:
+        print(
+            "restarted OneCycle schedule: "
+            + json.dumps(schedule_metadata, sort_keys=True),
+            flush=True,
+        )
 
     if multi_context_manifest is None:
         train_loaders = make_loaders(
@@ -619,6 +670,9 @@ def main() -> None:
         writer.add_text(
             "run/duration_bucket_batch_sizes",
             json.dumps(bucket_batch_sizes, indent=2, sort_keys=True),
+        )
+        writer.add_text(
+            "run/schedule", json.dumps(schedule_metadata, indent=2, sort_keys=True)
         )
     for epoch in range(start_epoch, epochs):
         model.train()
@@ -707,6 +761,7 @@ def main() -> None:
             "torch_rng_state": torch.get_rng_state(),
             "cuda_rng_state": torch.cuda.get_rng_state_all(),
             "recipe": recipe,
+            "runtime_schedule": schedule_metadata,
         }
         atomic_save(state, args.output_root / "last.pt")
         if not args.smoke_test and (epoch + 1) % int(training["save_every"]) == 0:
@@ -727,6 +782,7 @@ def main() -> None:
                 "source_identities": source_identities,
                 "duration_bucket_batch_sizes": bucket_batch_sizes,
                 "paper_reproduction": False,
+                "runtime_schedule": schedule_metadata,
                 "excluded_sources": (
                     ["DREAMER"] if multi_context_manifest is None else []
                 ),
