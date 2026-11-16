@@ -1,12 +1,15 @@
 # SAMBA training and release contract
 
-This repository publishes one current checkpoint named `SAMBA`.
+This repository publishes two checkpoints named `SAMBA-2s` and
+`SAMBA-100s`.
 
 ## Historical checkpoint status
 
 SAMBA-E and SAMBA-T were trained during a 2025 internship. Their checkpoint files were lost when the associated personal company account was removed after the internship. The internal preprocessing directories were later reorganized. The surviving data do not fully establish the original filtering, normalization, window boundaries, and sampling metadata.
 
-For this reason, the current checkpoint is not labeled as a strict reproduction of SAMBA-E or SAMBA-T. The original paper results remain unchanged, but new weights must be evaluated and reported separately.
+For this reason, the current checkpoints are not labeled as strict
+reproductions of SAMBA-E or SAMBA-T. The original paper results remain
+unchanged, and the new weights are evaluated and reported separately.
 
 ## Current data contract
 
@@ -37,16 +40,33 @@ online without persistent duplication.
 
 All Emotiv sources are normalized per window and channel by the absolute 95th percentile. Constant or nonfinite channels are zeroed and marked invalid in the channel mask. The recovered TUAB arrays already use the same scale rule.
 
+## Public checkpoint identities
+
+- `SAMBA-2s`: spatially diverse pretraining with a fixed 128-Hz, 256-sample
+  context across all sources;
+- `SAMBA-100s`: TUAB-only pretraining with a 128-Hz, 12,800-sample context.
+
+The suffix denotes pretraining duration. It does not constrain downstream
+input length.
+
 ## Required release artifacts
 
-The released `SAMBA` directory must contain:
+Each released directory must contain:
 
 - `config.json`;
 - `model.safetensors`;
 - `training_metadata.json` with the Git revision, manifest hash, seed, optimizer, scheduler, epoch, and validation metric;
 - `README.md` describing preprocessing, input units, intended use, limitations, and benchmark results.
+- `SHA256SUMS` covering the model card, configuration, weights, and metadata.
 
 The final checkpoint is selected using validation data only. Test data is evaluated after model selection. A release is not called pretrained until all artifacts are published together.
+
+Package both validation-best checkpoints without modifying their training
+directories:
+
+```bash
+python scripts/package_huggingface_checkpoints.py
+```
 
 ## Compatibility checks
 

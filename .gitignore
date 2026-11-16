@@ -3,7 +3,13 @@ Results/
 Checkpoints/
 !checkpoints/
 !checkpoints/README.md
-checkpoints/SAMBA/
+checkpoints/*
+!checkpoints/SAMBA-2s/
+checkpoints/SAMBA-2s/*
+!checkpoints/SAMBA-2s/README.md
+!checkpoints/SAMBA-100s/
+checkpoints/SAMBA-100s/*
+!checkpoints/SAMBA-100s/README.md
 artifacts/
 *.safetensors
 *.pth

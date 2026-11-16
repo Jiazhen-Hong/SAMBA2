@@ -87,13 +87,14 @@ The original SAMBA-E and SAMBA-T checkpoints were produced during a 2025 interns
 
 The paper results remain the record for the original experiments. New weights must not be used as direct replacements for reproducing the paper tables.
 
-### Current release direction
+### Current checkpoints
 
-The current training plan has two checkpoints. **SAMBA-T** follows the paper's
-TUAB-only 100-second setting. **SAMBA-E** keeps the paper's 128-Hz,
+The current releases are **SAMBA-100s** and **SAMBA-2s**. SAMBA-100s follows
+the paper's TUAB-only 100-second setting. SAMBA-2s keeps the paper's 128-Hz,
 256-sample window while adding spatial diversity from several devices. The
-short track uses source-homogeneous microbatches and a coordinate-driven
+two-second track uses source-homogeneous microbatches and a coordinate-driven
 decoder so that each dataset is reconstructed in its original channel space.
+The suffix records the pretraining duration, not a downstream restriction.
 Both encoders remain compatible with variable channel layouts and temporal
 lengths at downstream inference time.
 
@@ -112,7 +113,9 @@ The recovered TUAB array currently has 256 samples per window. Its directory nam
 
 The current evidence and blocking data issues are recorded in [`docs/DATA_AUDIT.md`](docs/DATA_AUDIT.md).
 
-The new checkpoint will be released only after the rebuilt data manifest, preprocessing record, validation result, code revision, and model weights are available together. Until then, pretrained weights are **not yet included**.
+Release-ready files are packaged from each validation-best training checkpoint
+with `scripts/package_huggingface_checkpoints.py`. Large weights remain outside
+Git and are uploaded separately to Hugging Face.
 
 The reusable implementation is under `src/samba_eeg/`. The research prototype under `Models/` remains temporarily available for comparison with the 2025 code.
 
@@ -122,7 +125,7 @@ The reusable implementation is under `src/samba_eeg/`. The research prototype un
 import torch
 from samba_eeg import SambaModel
 
-model = SambaModel.from_pretrained("path/to/SAMBA")
+model = SambaModel.from_pretrained("path/to/SAMBA-100s")
 output = model(
     signals=torch.randn(2, 14, 256),
     input_positions=torch.randn(14, 3),
@@ -137,11 +140,12 @@ features = output.last_hidden_state
 The checkpoint directory follows the common Hugging Face layout:
 
 ```text
-SAMBA/
+SAMBA-100s/
 ├── config.json
 ├── model.safetensors        # preferred
-├── README.md                # model card
-└── training_metadata.json   # data manifest hash, code revision, and metrics
+├── README.md                # Hugging Face model card
+├── training_metadata.json   # manifest identity and training provenance
+└── SHA256SUMS               # release integrity
 ```
 
 The optional `SambaNeuralBenchBackbone` adapter returns a plain `[B, T, D]` tensor and accepts runtime channel coordinates. The encoder accepts different channel counts and temporal lengths without changing checkpoint parameters.

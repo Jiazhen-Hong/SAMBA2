@@ -11,7 +11,7 @@ not force every EEG recording to 64 electrodes. The paper uses 16-channel
 TUAB, 14-channel Emotiv, and several 64-channel downstream datasets. The MNE
 `standard_1020` target file in this repository contains 94 coordinate entries.
 
-## SAMBA-T
+## SAMBA-100s (paper SAMBA-T track)
 
 - TUAB only
 - 16 input and reconstruction channels
@@ -26,7 +26,7 @@ The new SSL validation split is recording-disjoint and drawn only from the
 recovered TUAB training split. This avoids downstream test leakage but differs
 from the unavailable historical pipeline.
 
-## SAMBA-E
+## SAMBA-2s (extended SAMBA-E track)
 
 - every source is exactly 128 Hz and 256 samples (2 seconds)
 - five surviving Emotiv datasets plus HBN, Muse, and DICE
@@ -111,7 +111,7 @@ If that extension is interrupted, resume it with the same command but remove
 `--restart-scheduler` and the three learning-rate overrides. The scheduler
 state saved by the extension will then continue instead of starting over.
 
-## Initial SAMBA-Long linear probes
+## Initial SAMBA-100s linear probes
 
 The first binary checks use three NeuralBench tasks: TUAB pathology detection,
 depression diagnosis, and schizophrenia diagnosis. Pathology is an in-domain
@@ -119,8 +119,8 @@ check with unlabeled pretraining overlap; the other two are cross-dataset
 transfer checks. Run them sequentially on one GPU with:
 
 ```bash
-tmux new-session -d -s samba-long-probes \
-  "bash $HOME/Github/SAMBA2/scripts/evaluate_samba_long_binary.sh"
+tmux new-session -d -s samba-100s-probes \
+  "bash $HOME/Github/SAMBA2/scripts/evaluate_samba_100s_binary.sh"
 ```
 
 The script reuses local datasets and NeuralBench caches, runs the standard
