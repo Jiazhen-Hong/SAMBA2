@@ -110,3 +110,18 @@ PYTHONPATH=/data/SAMBA-tmp/python312-packages:$PWD/src \
 If that extension is interrupted, resume it with the same command but remove
 `--restart-scheduler` and the three learning-rate overrides. The scheduler
 state saved by the extension will then continue instead of starting over.
+
+## Initial SAMBA-Long linear probes
+
+The first binary checks use three NeuralBench tasks: TUAB pathology detection,
+depression diagnosis, and schizophrenia diagnosis. Pathology is an in-domain
+check with unlabeled pretraining overlap; the other two are cross-dataset
+transfer checks. Run them sequentially on one GPU with:
+
+```bash
+tmux new-session -d -s samba-long-probes \
+  "bash $HOME/Github/SAMBA2/scripts/evaluate_samba_long_binary.sh"
+```
+
+The script reuses local datasets and NeuralBench caches, runs the standard
+`linear_probe_mean` wrapper, and writes one log per task under `logs/`.
